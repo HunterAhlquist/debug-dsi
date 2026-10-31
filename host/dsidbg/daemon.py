@@ -71,8 +71,12 @@ class Device:
         return msg_type, seq, self.recv_exact(length)
 
     def send(self, msg_type, payload=b"", seq=0):
-        with self.send_lock:
-            self.sock.sendall(proto.frame(msg_type, payload, seq))
+        try:
+            with self.send_lock:
+                self.sock.sendall(proto.frame(msg_type, payload, seq))
+        except OSError as e:
+            # Report it as the device's problem: a bare OSError would look like the CLI's own socket closing.
+            raise DeviceError("device disconnected (%s)" % (e.strerror or e))
 
     def handshake(self, key):
         self.sock.settimeout(10)
@@ -316,7 +320,7 @@ class Daemon:
         dev = Device(self, sock, addr, gen)
         try:
             dev.handshake(self.key)
-        except (OSError, ConnectionError, struct.error) as e:
+        except (OSError, ConnectionError, struct.error, DeviceError) as e:
             self.note("rejected %s: %s" % (addr[0], e))
             sock.close()
             return
@@ -503,8 +507,20 @@ class Daemon:
         t0 = time.time()
         with dev.cmd_lock:
             dev.ack(proto.PUT_BEGIN, struct.pack("<II", len(data), crc) + req["remote"].encode())
-            for off in range(0, len(data), proto.PUT_CHUNK):
-                dev.send(proto.PUT_DATA, data[off:off + proto.PUT_CHUNK])
+            sync = True
+            for win in range(0, len(data), proto.PUT_WINDOW):
+                end = min(win + proto.PUT_WINDOW, len(data))
+                for off in range(win, end, proto.PUT_CHUNK):
+                    dev.send(proto.PUT_DATA, data[off:min(off + proto.PUT_CHUNK, end)])
+                if sync and end < len(data):
+                    try:
+                        dev.ack(proto.PUT_SYNC, timeout=30)  # raises if the write failed
+                    except DeviceError as e:
+                        # An agent from before PUT_SYNC: finish without windows, so it can still be updated.
+                        if "unknown message" not in str(e):
+                            raise
+                        self.note("%s doesn't know PUT_SYNC: uploading without windows (update its build)" % dev.app)
+                        sync = False
             text = dev.ack(proto.PUT_END, timeout=60)
         dt = time.time() - t0
         return {"reply": text, "bytes": len(data), "seconds": round(dt, 2),
@@ -549,6 +565,28 @@ class Daemon:
         dev = self.need_device(req)
         with dev.cmd_lock:
             return {"reply": dev.ack(proto.WATCHDOG, struct.pack("<I", req["seconds"]))}
+
+    def cmd_raw(self, req, reply):
+        """Testing aid: sends one message of any type and payload (hex) and returns the replies with its seq, waiting
+        up to `wait` seconds. Used by tests/hardware/run.py to throw malformed messages at the agent."""
+        dev = self.need_device(req)
+        payload = bytes.fromhex(req.get("payload", ""))
+        with dev.cmd_lock:
+            seq, q = dev.new_seq()
+            try:
+                dev.send(req["type"], payload, seq)
+                replies, deadline = [], time.time() + req.get("wait", 2)
+                while time.time() < deadline:
+                    try:
+                        item = q.get(timeout=0.1)
+                    except queue.Empty:
+                        continue
+                    if item is None or item[0] == "crash":
+                        break
+                    replies.append({"type": item[0], "payload": item[1].hex()})
+            finally:
+                dev.done_seq(seq)
+        return {"replies": replies, "alive": dev.alive}
 
     def cmd_prof_start(self, req, reply):
         dev = self.need_device(req)

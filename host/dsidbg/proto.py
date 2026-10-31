@@ -10,6 +10,10 @@ HEADER = struct.Struct("<IHH")  # payload length, type, seq
 MAX_PAYLOAD = 16 * 1024 * 1024
 DEFAULT_PORT = int(os.environ.get("DSIDBG_PORT", "7710"))  # the daemon's TCP port
 PUT_CHUNK = 8 * 1024  # the device accepts messages up to 12 KiB
+# Uploads go in windows this big; the host waits for PUT_SYNC's ACK (the data is on the card) before the next one, so
+# the DSi never writes the card while Wi-Fi packets stream in (that has hung its ARM7). Equal to the device's upload
+# buffer, so each window is one aligned card write.
+PUT_WINDOW = 32 * 1024
 
 HELLO, CHALLENGE, PROOF = 0x0001, 0x0002, 0x0003
 
@@ -28,6 +32,7 @@ PROF_START = 0x010B
 PROF_STOP = 0x010C
 APP_CMD = 0x010D
 WATCHDOG = 0x010E
+PUT_SYNC = 0x010F
 
 PONG = 0x0200
 ACK = 0x0201
@@ -54,6 +59,7 @@ KEYS = {
 CRASH_KINDS = {1: "data abort", 2: "undefined instruction", 3: "hang (watchdog)", 4: "panic"}
 CRASH_STRUCT = struct.Struct("<I16I6I36s")
 CRASH_FROM_FILE = 1
+CRASH_MAIN_BLOCKED = 2  # hang with every thread waiting: regs are where the main thread waits
 
 
 def frame(msg_type, payload=b"", seq=0):
@@ -152,5 +158,6 @@ def decode_crash(payload):
         "stack_base": stack_base,
         "stack": stack.hex(),
         "from_file": bool(flags & CRASH_FROM_FILE),
+        "main_blocked": bool(flags & CRASH_MAIN_BLOCKED),
         "msg": msg.split(b"\0", 1)[0].decode("utf-8", "replace"),
     }

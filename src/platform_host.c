@@ -78,6 +78,7 @@ void plat_reboot(const char *sd_path)
 
 void plat_info(char *buf, size_t cap) { snprintf(buf, cap, "mode=sim\nroot=%s\n", sd_root); }
 void plat_crash_install(unsigned flags) { (void)flags; }
+int plat_panic_on_main_thread(dsidbg_crash *crash) { (void)crash; return 1; }
 
 void plat_crash_show(const dsidbg_crash *c, const char *state)
 {

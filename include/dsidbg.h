@@ -43,6 +43,10 @@ extern "C" {
 #define DSIDBG_NO_IRQ_HOOK      (1u << 1) // no profiler, no hang watchdog
 #define DSIDBG_TRACE            (1u << 2) // log the agent's own connection and transfer steps
 #define DSIDBG_ECHO_LOG         (1u << 3) // also print every log line on the libnds console
+// Save crash reports that can't be sent to sd:/dsidbg/crash/ (the loader uploads them later). Off by default: if the
+// crash interrupted a file operation, writing another file can corrupt the card's filesystem. Only for apps that
+// don't use the card while they run.
+#define DSIDBG_SAVE_CRASHES     (1u << 4)
 
 typedef struct dsidbg_config {
     const char *app_name;    // shown by the daemon; default "app"

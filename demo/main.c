@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // dsidbg-demo: exercises every agent feature on the console. Top screen: a spinning 3D triangle (screenshots use
 // VRAM bank D). Bottom screen: log console. Commands (`dsidbg cmd ...`):
-//   echo TEXT | keys | abort | undef | hang | panic [TEXT] | busy MS
+//   echo TEXT | keys | abort | undef | hang | waithang | panic [TEXT] | busy MS | spam SECONDS
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,8 +11,9 @@
 
 #include "dsidbg.h"
 
-static volatile int hang_now;
+static volatile int hang_now, wait_hang;
 static int busy_ms;
+static uint32_t spam_frames; // log a line every frame for this many frames (log flood test)
 
 static void busy_loop(int ms)
 {
@@ -27,9 +28,15 @@ static int command(const char *line, char *reply, size_t cap)
     if (!strcmp(line, "abort")) { *(volatile uint32_t *)0x10000000 = 1; }
     if (!strcmp(line, "undef")) { __builtin_trap(); }
     if (!strcmp(line, "hang")) { hang_now = 1; snprintf(reply, cap, "hanging in the main loop"); return 0; }
+    if (!strcmp(line, "waithang")) { wait_hang = 1; snprintf(reply, cap, "waiting forever for an interrupt"); return 0; }
     if (!strncmp(line, "panic", 5)) dsidbg_panic(line[5] ? line + 6 : "demo panic");
+    if (!strncmp(line, "spam ", 5)) {
+        spam_frames = (uint32_t)atoi(line + 5) * 60;
+        snprintf(reply, cap, "logging every frame for %s s", line + 5);
+        return 0;
+    }
     if (!strncmp(line, "busy ", 5)) { busy_ms = atoi(line + 5); snprintf(reply, cap, "busy %d ms/frame", busy_ms); return 0; }
-    snprintf(reply, cap, "commands: echo TEXT, keys, abort, undef, hang, panic [TEXT], busy MS");
+    snprintf(reply, cap, "commands: echo TEXT, keys, abort, undef, hang, waithang, panic [TEXT], busy MS, spam SECONDS");
     return -1;
 }
 
@@ -79,6 +86,7 @@ int main(int argc, char **argv)
     uint32_t frame = 0, last_held = 0;
     for (;;) {
         while (hang_now) {}
+        if (wait_hang) cothread_yield_irq(IRQ_TIMER(0)); // never enabled: the main thread waits forever
         dsidbg_scan_keys();
         uint32_t held = dsidbg_keys_held();
         if (held != last_held) {
@@ -88,6 +96,10 @@ int main(int argc, char **argv)
             last_held = held;
         }
         if (busy_ms) busy_loop(busy_ms);
+        if (spam_frames) {
+            spam_frames--;
+            dsidbg_log("spam %lu", (unsigned long)frame);
+        }
         draw_triangle((int)(frame * 64));
         if (frame % 60 == 0) dsidbg_send(1, &frame, sizeof frame);
         frame++;

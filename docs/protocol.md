@@ -61,6 +61,12 @@ Each command gets an `ACK` with the same seq unless noted.
 | 0x010C | PROF_STOP | – | remaining `PROF` messages, then ACK |
 | 0x010D | APP_CMD | text | ACK carrying the app's reply |
 | 0x010E | WATCHDOG | u32 seconds | ACK |
+| 0x010F | PUT_SYNC | – | ACK after writing the data received so far to the card; text: bytes received |
+
+Uploads: `PUT_BEGIN`, then the file in windows of 32 KiB (`PUT_DATA` messages of up to 8 KiB), each window
+followed by `PUT_SYNC`; the host waits for its ACK before sending the next window, then sends `PUT_END`. While the
+DSi writes a window to the card, no data is in flight: on the DSi the ARM7 runs both the SD card and Wi-Fi, and an SD
+write during a stream of Wi-Fi packets has hung it.
 
 Input records: frames are counted in `dsidbg_frame()` calls. A record is active from `now + delay` for `frames`
 frames. Flag 1 (`REPLACE`) hides the real buttons while it is active. Key bits are libnds' `KEY_*`; `KEY_TOUCH`

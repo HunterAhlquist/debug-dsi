@@ -73,6 +73,9 @@ class Symbols:
 def format_crash(crash, syms=None):
     regs = crash["regs"]
     lines = ["%s%s: %s" % ("[saved on SD] " if crash.get("from_file") else "", crash["kind_name"], crash["msg"])]
+    if crash.get("main_blocked"):
+        lines.append("every thread was waiting: the registers are where the main thread waits (pc = its resume "
+                     "address), not the interrupted code (addr)")
     pc = regs[15]
     where = ""
     if syms:

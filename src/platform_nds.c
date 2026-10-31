@@ -22,6 +22,10 @@ void dsidbg__panic_switch(void) __attribute__((noreturn));
 VoidFn dsidbg__irq_next;
 
 static volatile uint32_t vblanks, since_beat, watchdog_frames;
+// vblanks at the last message from the ARM7. Its default core sends the input state every frame, so a gap of more
+// than a few frames means the ARM7 is stuck (it also runs Wi-Fi and the SD card for the ARM9).
+static volatile uint32_t arm7_seen;
+static cothread_info_t *main_ctx; // the main thread, for hang reports
 static volatile uint32_t ms_now, ms_frac; // milliseconds, kept in 32-bit integers (no 64-bit division)
 static int hooked;
 
@@ -59,6 +63,7 @@ uint32_t plat_prof_hz(void) { return hooked ? 1000 : 0; } // dswifi's 1 kHz time
 ARM_CODE uint32_t dsidbg__irq_hook(uint32_t pc, uint32_t pending)
 {
     if (!pending) return 0;
+    if (pending & IRQ_FIFO_NOT_EMPTY) arm7_seen = vblanks;
     // libnds handles the highest pending bit per IRQ entry; count only that one so nothing is counted twice.
     uint32_t bit = 1u << (31 - __builtin_clz(pending));
     if (bit == IRQ_TIMER(LIBNDS_DEFAULT_TIMER_WIFI)) {
@@ -120,6 +125,11 @@ static void exception_handler(void)
 void plat_crash_install(unsigned flags)
 {
     if (!(flags & DSIDBG_NO_CRASH_HANDLER)) setExceptionHandler(exception_handler);
+    // dsidbg_init() normally runs on the main thread: remember it, if this stack is the main one.
+    extern char __sp_usr[], __dtcm_start[];
+    uint32_t here = (uint32_t)(uintptr_t)__builtin_frame_address(0);
+    if (here >= (uint32_t)(uintptr_t)__dtcm_start && here < (uint32_t)(uintptr_t)__sp_usr - 0x400)
+        main_ctx = (cothread_info_t *)cothread_get_current();
     if (!(flags & DSIDBG_NO_IRQ_HOOK) && !hooked) {
         int ime = enterCriticalSection();
         dsidbg__irq_next = IRQ_HANDLER;
@@ -150,6 +160,8 @@ void plat_crash_show(const dsidbg_crash *c, const char *state)
     consoleSetColor(NULL, CONSOLE_DEFAULT);
     snprintf(line, sizeof line, "%-31.31s\n", c->msg);
     consolePrintString(line);
+    snprintf(line, sizeof line, "%-31.31s\n", strlen(c->msg) > 31 ? c->msg + 31 : "");
+    consolePrintString(line);
     snprintf(line, sizeof line, "pc   %08lx  addr %08lx\n", (unsigned long)c->regs[15], (unsigned long)c->fault_addr);
     consolePrintString(line);
     for (int i = 0; i < 16; i += 2) {
@@ -157,9 +169,23 @@ void plat_crash_show(const dsidbg_crash *c, const char *state)
                  (unsigned long)c->regs[i + 1]);
         consolePrintString(line);
     }
-    snprintf(line, sizeof line, "cpsr %08lx  frame %lu\n\n", (unsigned long)c->cpsr, (unsigned long)c->frame);
+    snprintf(line, sizeof line, "cpsr %08lx  frame %lu\n", (unsigned long)c->cpsr, (unsigned long)c->frame);
     consolePrintString(line);
-    snprintf(line, sizeof line, "%-31.31s", state);
+    // Words on the stack that point into code: likely return addresses, a backtrace to look up with the ELF.
+    extern char __text_start[], __text_end[];
+    uint32_t t0 = (uint32_t)(uintptr_t)__text_start, t1 = (uint32_t)(uintptr_t)__text_end;
+    const uint32_t *st = (const uint32_t *)(uintptr_t)c->stack_base;
+    int shown = 0;
+    consolePrintString("calls:");
+    for (uint32_t i = 0; c->stack_len && i < c->stack_len / 4 && shown < 9; i++) {
+        uint32_t w = st[i];
+        if (!((w >= t0 && w < t1) || (w >= 0x01000000 && w < 0x01008000))) continue;
+        snprintf(line, sizeof line, "%s%08lx", shown % 3 ? " " : "\n ", (unsigned long)w);
+        consolePrintString(line);
+        shown++;
+    }
+    for (; shown < 9; shown++) consolePrintString(shown % 3 ? "         " : "\n ");
+    snprintf(line, sizeof line, "\n\n%-31.31s", state);
     consolePrintString(line);
 }
 
@@ -281,13 +307,50 @@ int plat_discovery_targets(uint32_t *addrs, int max)
     if (ip.s_addr && mask.s_addr && max > n) addrs[n++] = ip.s_addr | ~mask.s_addr;
     return n;
 }
-void plat_yield(void) { cothread_yield(); }
+static int no_threads; // set by the panic loop when it took over something other than the main thread
+
+void plat_yield(void)
+{
+    if (!no_threads) cothread_yield();
+}
 
 void plat_wait_frame(void)
 {
-    cothread_yield();
+    plat_yield();
     swiWaitForVBlank();
-    cothread_yield();
+    plat_yield();
+}
+
+// BlocksDS runs main() on the DTCM stack below the top 1 KiB, which the thread scheduler keeps (crt0 passes
+// __sp_usr - 0x400 to cothread_start); other threads' stacks are on the heap.
+int plat_panic_on_main_thread(dsidbg_crash *c)
+{
+    extern char __sp_usr[], __dtcm_start[];
+    uint32_t sp = c->regs[13], bottom = (uint32_t)(uintptr_t)__dtcm_start, top = (uint32_t)(uintptr_t)__sp_usr - 0x400;
+    int main_thread = c->kind == CRASH_PANIC || (sp >= bottom && sp <= top);
+    if (main_thread) return 1;
+    no_threads = 1;
+    if (c->kind != CRASH_HANG || !main_ctx) return 0;
+    // The main thread isn't running, so its context holds its own saved stack pointer. __ndsabi_coro_yield pushed
+    // r4-r11 and lr there: lr is where it resumes, inside the cothread_yield_*() call it waits in.
+    uint32_t msp = main_ctx->arm_sp;
+    if (msp < bottom || msp + 36 > top) return 0;
+    const uint32_t *saved = (const uint32_t *)(uintptr_t)msp;
+    for (int i = 0; i < 16; i++) c->regs[i] = 0;
+    for (int i = 0; i < 8; i++) c->regs[4 + i] = saved[i];
+    uint32_t lr = saved[8];
+    c->regs[13] = msp + 36;
+    c->regs[14] = lr;
+    c->regs[15] = lr & ~1u;
+    c->cpsr = 0x1F | (lr & 1 ? 0x20 : 0); // system mode, Thumb if it returns to Thumb code
+    c->flags |= CRASH_MAIN_BLOCKED;
+    // How long the ARM7 has been silent, and the ARM9's IPC FIFO control register (bit 0: send FIFO empty, 1: full;
+    // 8: receive FIFO empty, 9: full; 14: error).
+    uint32_t quiet = (vblanks - arm7_seen) / 6; // tenths of a second
+    if (quiet > 9999) quiet = 9999;
+    snprintf(c->msg, sizeof c->msg, "main waits arm7 %u.%us ipc %04x", (unsigned short)(quiet / 10),
+             (unsigned)(quiet % 10), (unsigned short)REG_IPC_FIFO_CR);
+    return 0;
 }
 
 // ---------------------------------------------------------------------------------------------------------------

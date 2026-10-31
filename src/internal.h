@@ -35,6 +35,7 @@ enum {
     MSG_PROF_STOP = 0x010C,   // flushes PROF samples, then ACK
     MSG_APP_CMD = 0x010D,     // text; ACK carries the app's reply
     MSG_WATCHDOG = 0x010E,    // u32 seconds (0 = off)
+    MSG_PUT_SYNC = 0x010F,    // writes the received upload data to the card, then ACK (bytes so far)
 
     // Device -> host
     MSG_PONG = 0x0200,
@@ -55,7 +56,8 @@ enum {
 
 // Crash kinds
 enum { CRASH_DATA_ABORT = 1, CRASH_UNDEFINED = 2, CRASH_HANG = 3, CRASH_PANIC = 4 };
-#define CRASH_FROM_FILE 1u // flags: sent from a dump saved on the SD card
+#define CRASH_FROM_FILE    1u // flags: sent from a dump saved on the SD card
+#define CRASH_MAIN_BLOCKED 2u // flags: a hang caught while every thread waited; regs are the main thread's wait point
 
 typedef struct dsidbg_crash {
     uint32_t kind;
@@ -99,6 +101,11 @@ void plat_reboot(const char *sd_path) __attribute__((noreturn));
 void plat_info(char *buf, size_t cap);
 void plat_crash_install(unsigned flags);
 void plat_crash_show(const dsidbg_crash *crash, const char *state);
+// 1 if the crash or hang interrupted the app's main thread. Otherwise (the thread scheduler, a network thread) the
+// panic loop can't switch threads: no network, no files, and the platform stops yielding. For a hang caught in the
+// scheduler (every thread waiting), it replaces the registers with the main thread's saved ones, so the report
+// shows what the main thread waited for, and sets CRASH_MAIN_BLOCKED.
+int plat_panic_on_main_thread(dsidbg_crash *crash);
 int plat_valid_ram(uint32_t addr, uint32_t len);
 void plat_console_write(const char *text, size_t len);
 void plat_hook_stdout(int enable);

@@ -76,6 +76,14 @@ static size_t loglen;
 #define DMA_ALIGN 32
 static void *dma_alloc(size_t n) { return aligned_alloc(DMA_ALIGN, (n + DMA_ALIGN - 1) & ~(size_t)(DMA_ALIGN - 1)); }
 
+#define GET_CHUNK 4096           // download message size
+#define GET_CHUNKS_PER_FRAME 3   // up to 12 KiB per frame, if the send queue has room
+static FILE *get_f;              // the running download, if any
+static uint8_t *get_buf;
+static uint16_t get_seq;
+static uint32_t get_size, get_crc;
+static void get_close(void);
+
 #define PUT_BUFFER (32 * 1024) // uploads go to the card in pieces this big (fewer, faster SD writes)
 static uint8_t *put_buf;       // allocated during an upload only
 static size_t put_fill;
@@ -173,20 +181,38 @@ static void mkdirs_for(const char *local)
 
 static uint32_t txq_used(void) { return txq_w - txq_r; }
 
-static int queue_msg(uint16_t type, const void *a, size_t alen, const void *b, size_t blen)
+static void txq_put(const void *src, size_t n)
 {
-    size_t total = PROTO_HEADER + alen + blen;
-    if (!txq || total > txq_size - txq_used()) return -1;
+    const uint8_t *p = src;
+    while (n) {
+        uint32_t at = txq_w & (txq_size - 1);
+        size_t take = txq_size - at < n ? txq_size - at : n;
+        memcpy(txq + at, p, take);
+        txq_w += (uint32_t)take;
+        p += take;
+        n -= take;
+    }
+}
+
+static size_t txq_free(void) { return txq ? txq_size - txq_used() : 0; }
+
+// Queues a whole message (header + a + b), or nothing if it doesn't fit. Returns 0 or -1.
+static int queue_msg_seq(uint16_t type, uint16_t seq, const void *a, size_t alen, const void *b, size_t blen)
+{
+    if (PROTO_HEADER + alen + blen > txq_free()) return -1;
     uint8_t hdr[PROTO_HEADER];
     put32(hdr, (uint32_t)(alen + blen));
     put16(hdr + 4, type);
-    put16(hdr + 6, 0);
-    const uint8_t *parts[3] = {hdr, a, b};
-    size_t lens[3] = {PROTO_HEADER, alen, blen};
-    for (int i = 0; i < 3; i++)
-        for (size_t j = 0; j < lens[i]; j++)
-            txq[(txq_w++) & (txq_size - 1)] = parts[i][j];
+    put16(hdr + 6, seq);
+    txq_put(hdr, sizeof hdr);
+    if (alen) txq_put(a, alen);
+    if (blen) txq_put(b, blen);
     return 0;
+}
+
+static int queue_msg(uint16_t type, const void *a, size_t alen, const void *b, size_t blen)
+{
+    return queue_msg_seq(type, 0, a, alen, b, blen);
 }
 
 // Agent steps, logged with DSIDBG_TRACE (and shown on screen with DSIDBG_ECHO_LOG): after a freeze the last line
@@ -205,6 +231,7 @@ static void drop_conn(const char *why)
     st = ST_DOWN;
     retry_at = plat_ms() + 2000;
     rxlen = 0;
+    if (get_f) get_close();
     if (put_fd >= 0) {
         put_close();
         TRACE("drop: upload file closed");
@@ -460,26 +487,31 @@ void dsidbg__panic_main(void)
     c->frame = frame;
     if (c->kind == CRASH_HANG && !c->msg[0])
         snprintf(c->msg, sizeof c->msg, "no dsidbg_frame() for %u s", cfg.watchdog_seconds);
+    // Interrupting the thread scheduler or a network thread leaves no way to switch threads: the network and the
+    // card are out of reach, so only the screen can show the report. (Before the stack copy: for a hang in the
+    // scheduler this switches the registers to the main thread's wait point.)
+    int threads = plat_panic_on_main_thread(c);
     uint32_t sp = c->regs[13], n = CRASH_STACK_MAX;
     while (n && !plat_valid_ram(sp, n)) n /= 2;
     if (n) memcpy(crash_stack, (const void *)(uintptr_t)sp, n);
     c->stack_base = sp;
     c->stack_len = n;
     crash_pending = 1;
+    const char *stuck = "not sendable: press power";
     log_flush();
-    plat_crash_show(c, dsidbg_status());
+    plat_crash_show(c, threads ? dsidbg_status() : stuck);
 
     uint32_t t0 = plat_ms(), shown = t0;
     int saved = 0;
     for (;;) {
-        if (inited) service();
+        if (inited && threads) service();
         uint32_t now = plat_ms();
-        if (crash_pending && !saved && now - t0 > CRASH_SAVE_DELAY_MS) {
+        if (threads && crash_pending && !saved && (cfg.flags & DSIDBG_SAVE_CRASHES) && now - t0 > CRASH_SAVE_DELAY_MS) {
             save_crash_file();
             saved = 1;
         }
         if (now - shown > 1000) {
-            plat_crash_show(c, crash_pending ? dsidbg_status() : "reported to host");
+            plat_crash_show(c, !threads ? stuck : crash_pending ? dsidbg_status() : "reported to host");
             shown = now;
         }
         plat_wait_frame();
@@ -601,7 +633,20 @@ static void cmd_put_data(const uint8_t *p, size_t n)
         p += take;
         n -= take;
         if (put_fill == PUT_BUFFER && put_flush() < 0) { put_err = errno ? errno : EIO; return; }
+        plat_heartbeat(); // a slow upload is not a hang
     }
+}
+
+// The host sends an upload in windows and waits for this ACK after each one, so no Wi-Fi traffic runs while the card
+// is written. On the DSi, the ARM7 does both, and an SD write during a stream of Wi-Fi packets has hung it (the
+// ARM9 then waits forever for the write to finish).
+static void cmd_put_sync(uint16_t seq)
+{
+    if (put_fd < 0) { ack(seq, -1, "no transfer in progress"); return; }
+    if (!put_err && put_fill && put_flush() < 0) put_err = errno ? errno : EIO;
+    plat_heartbeat();
+    if (put_err) { ack(seq, -1, "write failed (errno %d)", put_err); return; }
+    ack(seq, 0, "%lu", (unsigned long)put_got);
 }
 
 static void cmd_put_end(uint16_t seq)
@@ -621,32 +666,58 @@ static void cmd_put_end(uint16_t seq)
     ack(seq, 0, "%lu bytes", (unsigned long)put_got);
 }
 
+// Downloads are sent a few chunks per dsidbg_frame() (see get_step()), so a big file doesn't stop the app for the
+// whole transfer.
 static void cmd_get(uint16_t seq, const uint8_t *p, size_t n)
 {
     char path[256], local[264];
     payload_str(p, n, path, sizeof path);
+    if (get_f) { ack(seq, -1, "a download is already running"); return; }
     if (local_path(path, local, sizeof local) < 0) { ack(seq, -1, "path must be on sd:/"); return; }
     FILE *f = fopen(local, "rb");
     if (!f) { ack(seq, -1, "%s not found", path); return; }
-    enum { CHUNK = 4096 };
-    uint8_t *buf = dma_alloc(CHUNK);
-    if (!buf) { fclose(f); ack(seq, -1, "out of memory"); return; }
-    uint32_t size = 0, crc = 0;
-    size_t got;
-    while ((got = fread(buf, 1, CHUNK, f)) > 0) {
-        if (send_direct(MSG_FILE_DATA, seq, buf, got, NULL, 0) < 0) { fclose(f); free(buf); return; }
-        size += (uint32_t)got;
-        crc = dsidbg__crc32(crc, buf, got);
-        plat_heartbeat();
+    get_buf = dma_alloc(GET_CHUNK);
+    if (!get_buf) { fclose(f); ack(seq, -1, "out of memory"); return; }
+    get_f = f;
+    get_seq = seq;
+    get_size = get_crc = 0;
+    TRACE("download: %s", path);
+}
+
+static void get_close(void)
+{
+    if (get_f) fclose(get_f);
+    get_f = NULL;
+    free(get_buf);
+    get_buf = NULL;
+}
+
+// Queues up to GET_CHUNKS_PER_FRAME chunks of the running download, then the end message.
+// Chunks go into the send queue only when there is room, and the queue drains without blocking (flush_tx(0)), so
+// the network sets the download speed and the app keeps its frame rate.
+static void get_step(void)
+{
+    for (int i = 0; get_f && i < GET_CHUNKS_PER_FRAME; i++) {
+        // A chunk at most a quarter of the queue, and a quarter kept free for logs and status: a small configured
+        // queue still downloads, and the download never crowds out the log.
+        size_t chunk = txq_size / 4 < GET_CHUNK ? txq_size / 4 : GET_CHUNK;
+        if (txq_free() < PROTO_HEADER + chunk + txq_size / 4) return; // the network hasn't caught up yet
+        size_t got = fread(get_buf, 1, chunk, get_f);
+        if (got > 0) {
+            queue_msg_seq(MSG_FILE_DATA, get_seq, get_buf, got, NULL, 0);
+            get_size += (uint32_t)got;
+            get_crc = dsidbg__crc32(get_crc, get_buf, got);
+            if (got == chunk) continue;
+        }
+        uint8_t end[12];
+        put32(end, (uint32_t)(ferror(get_f) ? -1 : 0));
+        put32(end + 4, get_size);
+        put32(end + 8, get_crc);
+        uint16_t seq = get_seq;
+        get_close();
+        TRACE("download: done");
+        queue_msg_seq(MSG_FILE_END, seq, end, sizeof end, NULL, 0); // fits: a chunk's worth of room was free
     }
-    int err = ferror(f);
-    fclose(f);
-    free(buf);
-    uint8_t end[12];
-    put32(end, (uint32_t)(err ? -1 : 0));
-    put32(end + 4, size);
-    put32(end + 8, crc);
-    send_direct(MSG_FILE_END, seq, end, sizeof end, NULL, 0);
 }
 
 static void cmd_list(uint16_t seq, const uint8_t *p, size_t n)
@@ -742,6 +813,7 @@ static void handle(uint16_t type, uint16_t seq, const uint8_t *p, size_t n)
     case MSG_PUT_BEGIN: cmd_put_begin(seq, p, n); break;
     case MSG_PUT_DATA: cmd_put_data(p, n); break;
     case MSG_PUT_END: cmd_put_end(seq); break;
+    case MSG_PUT_SYNC: cmd_put_sync(seq); break;
     case MSG_GET: cmd_get(seq, p, n); break;
     case MSG_LIST: cmd_list(seq, p, n); break;
     case MSG_DELETE: cmd_delete(seq, p, n); break;
@@ -769,16 +841,24 @@ static void handle(uint16_t type, uint16_t seq, const uint8_t *p, size_t n)
     }
 }
 
+// Bytes received per dsidbg_frame() at most. Without a limit an upload keeps this loop busy (the SD writes let the
+// network thread refill the socket), and the app gets only a few frames a second. 24 KiB a frame is far more than
+// the Wi-Fi delivers.
+#define RX_PER_FRAME (24 * 1024)
+
 static void pump_rx(void)
 {
-    for (;;) {
-        long r = recv(sock, rxbuf + rxlen, RX_CAP - rxlen, 0);
+    size_t budget = RX_PER_FRAME;
+    while (budget > 0) {
+        size_t room = RX_CAP - rxlen;
+        long r = recv(sock, rxbuf + rxlen, room < budget ? room : budget, 0);
         if (r == 0) { drop_conn("host closed the connection"); return; }
         if (r < 0) {
             if (!would_block()) drop_conn("receive failed");
             return;
         }
         rxlen += (size_t)r;
+        budget -= (size_t)r;
         while (rxlen >= PROTO_HEADER) {
             uint32_t len = get32(rxbuf);
             if (len > PROTO_MAX_RX) { drop_conn("message too large"); return; }
@@ -985,6 +1065,8 @@ static void service(void)
         if (crash_pending && send_crash(&dsidbg__crash, crash_stack, dsidbg__crash.stack_len) == 0) crash_pending = 0;
         if (!crash_files_done) { crash_files_done = 1; send_crash_files(); }
         if (prof_w - prof_r >= 512) prof_flush(1024, 0);
+        if (get_f) get_step();
+        if (st != ST_READY) break;
         if (now - last_status >= 1000) send_status(now);
         flush_tx(0);
         break;

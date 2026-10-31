@@ -236,8 +236,10 @@ Things to know:
   - An app that never calls `dsidbg_init()` pays only the static part.
   - dswifi uses ARM9 timer 3. The agent itself uses no timers: the profiler samples on dswifi's 1 kHz timer
     interrupt.
-- **Blocking commands:** screenshots (about 0.2 s), file transfers and the profiler's final flush run inside
-  `dsidbg_frame()`, so the app pauses for them. Everything else is queued and sent without blocking.
+- **Blocking commands:** screenshots (about 0.2 s) and the profiler's final flush run inside `dsidbg_frame()`, so
+  the app pauses for them. File transfers don't: each frame takes at most 24 KiB of an upload, and a download is
+  queued only as fast as Wi-Fi sends it. The demo stays above 53 fps during both on a DSi XL. Everything else is
+  queued and sent without blocking.
 - **Tracing:** `DSIDBG_TRACE` logs the agent's own connection and transfer steps, and `DSIDBG_ECHO_LOG` also prints
   every log line on the libnds console. If a freeze stops the network, the last line on screen shows where the
   agent was.
@@ -246,7 +248,15 @@ Things to know:
   profiler and watchdog with it. `DSIDBG_NO_CRASH_HANDLER` keeps your own exception handler.
 - **Crashes:**
   - The agent shows the dump on the bottom screen and sends it if the network still works.
-  - If it can't send within 8 s, it saves the dump to `sd:/dsidbg/crash/` and the next connection uploads it.
+  - It can send only when the crash or hang stopped your main thread. If it stopped another thread, or the main
+    thread while it waited in `cothread_yield_irq()`, the network can't run: the screen says "not sendable: press
+    power". Note the dump from the screen. For a hang where every thread waits, the screen shows where the main
+    thread waits (`pc`), how long the ARM7 has been silent (`arm7 N.Ns`: more than a fraction of a second means the
+    ARM7, which runs Wi-Fi and the SD card, has stopped), and code addresses from the main thread's stack (`calls`),
+    to look up with `arm-none-eabi-addr2line -e app.elf`.
+  - With `DSIDBG_SAVE_CRASHES`, a dump that can't be sent within 8 s goes to `sd:/dsidbg/crash/` and the next
+    connection uploads it. It is off by default: writing a file after a crash that interrupted another file
+    operation can corrupt the card. Turn it on only in apps that don't use the card while they run.
   - A hang with interrupts disabled can't be detected. Press the power button and the loader comes back up.
 
 ## Layout
