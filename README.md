@@ -47,8 +47,8 @@ Each [release](../../releases) has:
 Each app includes Python, the tray's packages and the loader: "Set Up SD Card..." copies the loader to the card,
 so there is nothing else to put anywhere.
 
-- **macOS:** unzipping gives `dsidbg.app`. Move it to Applications, then open it. It isn't notarized: the first
-  time, right-click it, choose Open and confirm. It appears in the menu bar (a small DS). Move it before using
+- **macOS:** unzipping gives `dsidbg.app`. Move it to Applications, then open it. It is signed and notarized, so
+  macOS opens it like any downloaded app. It appears in the menu bar (a small DS). Move it before using
   "Install MCP", since the MCP configuration points at the app. The CLI is
   `/Applications/dsidbg.app/Contents/MacOS/dsidbg` ("Open Terminal" in the menu puts it on the PATH).
 - **Windows:** unzip the `dsidbg` folder somewhere permanent and open `dsidbg.exe`. It isn't signed: choose More
@@ -303,6 +303,19 @@ python3 -m pip install pyinstaller pystray pillow
 python3 -m PyInstaller --noconfirm --distpath dist --workpath build/pyinstaller packaging/dsidbg.spec
 python3 packaging/package.py macos
 ```
+
+### Signing the macOS app
+
+The release workflow signs `dsidbg.app` with a Developer ID and has Apple notarize it, so macOS opens it without a
+warning. It builds with `DSIDBG_CODESIGN_IDENTITY` set (`packaging/dsidbg.spec`), then `packaging/notarize.py`
+uploads the app, waits for Apple's verdict (printing Apple's log if it's rejected), staples the ticket so the app
+opens offline too, and checks the result with Gatekeeper.
+
+It needs five repository secrets: `MACOS_CERT_P12` and `MACOS_CERT_PASSWORD` (the Developer ID Application
+certificate, exported with its private key), and `MACOS_NOTARY_KEY`, `MACOS_NOTARY_KEY_ID` and
+`MACOS_NOTARY_ISSUER` (an App Store Connect API key). `MACOS_CERT_P12` and `MACOS_NOTARY_KEY` hold the `.p12`
+and `.p8` files base64-encoded. A release tag fails without them; a manual run without them builds an ad hoc signed
+app.
 
 ## Development
 

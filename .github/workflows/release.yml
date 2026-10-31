@@ -66,11 +66,48 @@ jobs:
           - os: ubuntu-22.04 # older glibc: runs on more distributions
             platform: linux
     runs-on: ${{ matrix.os }}
+    env:
+      # macOS signing and notarization (see "Signing the macOS app" in the README). Without these secrets the app is
+      # signed ad hoc, which is fine for a manual run; a release tag requires them.
+      MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+      MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+      MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+      MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+      MACOS_NOTARY_ISSUER: ${{ secrets.MACOS_NOTARY_ISSUER }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      - name: Import the Developer ID certificate
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          if [ -z "$MACOS_CERT_P12" ] || [ -z "$MACOS_NOTARY_KEY" ]; then
+            if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+              echo "::error::a release needs the MACOS_CERT_* and MACOS_NOTARY_* secrets (signing and notarization)"
+              exit 1
+            fi
+            echo "::warning::no signing secrets: the macOS app is signed ad hoc and not notarized"
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+          echo "$MACOS_NOTARY_KEY" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          {
+            echo "DSIDBG_CODESIGN_IDENTITY=Developer ID Application"
+            echo "DSIDBG_NOTARY_KEY=$RUNNER_TEMP/notary.p8"
+            echo "DSIDBG_NOTARY_KEY_ID=$MACOS_NOTARY_KEY_ID"
+            echo "DSIDBG_NOTARY_ISSUER=$MACOS_NOTARY_ISSUER"
+          } >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v8
         with:
           name: nds
@@ -79,6 +116,9 @@ jobs:
         run: python -m pip install pyinstaller pystray pillow
       - name: Build the app (bundles the loader)
         run: python -m PyInstaller --noconfirm --distpath dist --workpath build/pyinstaller packaging/dsidbg.spec
+      - name: Notarize and staple
+        if: matrix.platform == 'macos' && env.DSIDBG_CODESIGN_IDENTITY != ''
+        run: python packaging/notarize.py
       - name: Package
         run: python packaging/package.py ${{ matrix.platform }}
       - uses: actions/upload-artifact@v7

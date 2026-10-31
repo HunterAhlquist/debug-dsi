@@ -6,6 +6,11 @@
 #     pyinstaller --noconfirm --distpath dist --workpath build/pyinstaller packaging/dsidbg.spec
 #
 # Needs pyinstaller, pystray and pillow. Output: dist/dsidbg.app on macOS, dist/dsidbg/ elsewhere.
+#
+# macOS signing: set DSIDBG_CODESIGN_IDENTITY to a "Developer ID Application" identity (its name or hash) and every
+# binary is signed with it, with the hardened runtime and a secure timestamp, as notarization requires (then run
+# packaging/notarize.py; the release workflow does both). Without it the app is signed ad hoc and Gatekeeper asks
+# before the first launch.
 import os
 import sys
 
@@ -19,6 +24,7 @@ if not os.path.exists(LOADER):
     raise SystemExit("build/dsidbg-loader.nds is missing: build the DSi targets first (make nds)")
 
 MAC, WIN = sys.platform == "darwin", sys.platform.startswith("win")
+IDENTITY = (os.environ.get("DSIDBG_CODESIGN_IDENTITY") or None) if MAC else None
 
 # App icon: the tray icon, scaled up.
 icon_dir = os.path.join(ROOT, "build", "pyinstaller-icon")
@@ -54,6 +60,7 @@ exe = EXE(
     # Windows needs a console executable for the CLI and the MCP server's stdio; the tray detaches from it.
     console=not MAC,
     icon=icon,
+    codesign_identity=IDENTITY,  # the hardened runtime needs no entitlements (checked: CLI, MCP server, tray)
 )
 coll = COLLECT(exe, a.binaries, a.datas, name="dsidbg")
 if MAC:
