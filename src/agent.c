@@ -289,9 +289,10 @@ static void send_status(uint32_t now)
     uint32_t dt = now - last_status, frames = frame - frames_at_status;
     uint32_t fps10 = dt ? frames * 10000 / dt : 0;
     int n = snprintf(text, sizeof text,
-                     "frame=%lu\nfps=%lu.%lu\nuptime_ms=%lu\nlog_drops=%lu\nprof=%d\npanic=%d\n",
+                     "frame=%lu\nfps=%lu.%lu\nuptime_ms=%lu\nlog_drops=%lu\nprof=%d\npanic=%d\nheap_kib=%lu\n",
                      (unsigned long)frame, (unsigned long)(fps10 / 10), (unsigned long)(fps10 % 10),
-                     (unsigned long)now, (unsigned long)log_drops, prof_on, dsidbg__in_panic);
+                     (unsigned long)now, (unsigned long)log_drops, prof_on, dsidbg__in_panic,
+                     (unsigned long)(plat_heap_used() / 1024));
     queue_msg(MSG_STATUS, text, (size_t)n, NULL, 0);
     last_status = now;
     frames_at_status = frame;

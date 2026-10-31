@@ -87,6 +87,7 @@ const char *plat_net_state(void);
 uint32_t plat_ip(void);          // network byte order
 uint32_t plat_entropy(void);     // varies between boots (clock, timers)
 int plat_discovery_targets(uint32_t *addrs, int max); // broadcast addresses (network order)
+uint32_t plat_heap_used(void);   // bytes allocated from the heap (0 if unknown)
 void plat_yield(void);           // let the network stack run
 void plat_wait_frame(void);      // wait about one frame (and yield)
 void plat_heartbeat(void);       // reset the watchdog

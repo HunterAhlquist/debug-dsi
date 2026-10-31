@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // DSi platform: dswifi, SD card, display capture, Unlaunch reboot, exception handler and IRQ hook.
+#include <malloc.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -251,6 +252,12 @@ uint32_t plat_entropy(void)
     return (uint32_t)time(NULL) * 2654435761u ^ (uint32_t)REG_VCOUNT << 16 ^
            TIMER_DATA(LIBNDS_DEFAULT_TIMER_WIFI) ^ vblanks * 40503u;
 }
+uint32_t plat_heap_used(void)
+{
+    struct mallinfo mi = mallinfo();
+    return (uint32_t)mi.uordblks;
+}
+
 int plat_discovery_targets(uint32_t *addrs, int max)
 {
     // The limited broadcast address, and the subnet's directed broadcast when DHCP gave us a netmask.

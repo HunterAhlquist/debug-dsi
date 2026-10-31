@@ -41,6 +41,8 @@ uint32_t plat_entropy(void)
     clock_gettime(CLOCK_REALTIME, &ts);
     return (uint32_t)ts.tv_nsec ^ (uint32_t)ts.tv_sec * 2654435761u ^ (uint32_t)getpid() << 16;
 }
+uint32_t plat_heap_used(void) { return 0; }
+
 int plat_discovery_targets(uint32_t *addrs, int max)
 {
     // The simulator asks on loopback (DSIDBG_SIM_DISCOVER overrides it, e.g. a broadcast address).

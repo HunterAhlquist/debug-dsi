@@ -252,8 +252,8 @@ def do_status(a):
     s = st.get("status", {})
     print("%s %s from %s, connected %ds" % (st["app"], st["build"], st["addr"], time.time() - st["connected_at"]))
     if s:
-        print("frame %s  fps %s  uptime %ss  log drops %s" % (s.get("frame"), s.get("fps"),
-                                                             int(s.get("uptime_ms", 0)) // 1000, s.get("log_drops")))
+        print("frame %s  fps %s  uptime %ss  log drops %s  heap %s KiB" % (
+            s.get("frame"), s.get("fps"), int(s.get("uptime_ms", 0)) // 1000, s.get("log_drops"), s.get("heap_kib", "?")))
     info = st.get("info", {})
     if info:
         print(" ".join("%s=%s" % kv for kv in sorted(info.items())))
