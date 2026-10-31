@@ -31,15 +31,25 @@
 #define MAX_INJECT   32
 #define PROF_N       4096 // power of two
 #define CONNECT_TIMEOUT_MS 4000
+#define DISCOVER_MS        5000 // one discovery round
+#define DISCOVER_RESEND_MS 1000
 #define SEND_TIMEOUT_MS    10000
 #define CRASH_SAVE_DELAY_MS 8000
 
-enum { ST_OFF, ST_DOWN, ST_CONNECTING, ST_HANDSHAKE, ST_READY };
+enum { ST_OFF, ST_DOWN, ST_DISCOVER, ST_CONNECTING, ST_HANDSHAKE, ST_READY };
 
 static dsidbg_config cfg;
 static char host[64], key[128], ssid[33], pass[65];
 static size_t key_len;
 static uint16_t port;
+
+// Where to connect. The configured host is tried first; after a failure (or with no host configured) the agent
+// broadcasts a discovery request and connects to the daemon that answers with a valid signature.
+static uint32_t cfg_addr, cur_addr;   // network byte order; 0 = none
+static uint16_t cur_port;
+static int connect_fails, discovered, udp = -1;
+static uint8_t disc_nonce[16];
+static uint32_t disc_until, disc_next;
 static int inited, st = ST_OFF, sock = -1;
 static uint32_t st_time, retry_at, last_status, frames_at_status;
 static uint8_t nonce_d[16];
@@ -294,8 +304,10 @@ static void send_info(void)
     ip.s_addr = plat_ip();
     plat_info(plat, sizeof plat);
     int n = snprintf(text, sizeof text,
-                     "lib=%s\nproto=%d\napp=%s\nbuild=%s\nip=%s\ncapture_bank=%d\nwatchdog=%u\nprof_hz=%lu\n%s",
-                     DSIDBG_VERSION, PROTO_VERSION, cfg.app_name, cfg.build_id, inet_ntoa(ip), cfg.capture_bank,
+                     "lib=%s\nproto=%d\napp=%s\nbuild=%s\nip=%s\nhost_from=%s\ncapture_bank=%d\nwatchdog=%u\n"
+                     "prof_hz=%lu\n%s",
+                     DSIDBG_VERSION, PROTO_VERSION, cfg.app_name, cfg.build_id, inet_ntoa(ip),
+                     discovered ? "discovery" : "config", cfg.capture_bank,
                      cfg.watchdog_seconds, (unsigned long)plat_prof_hz(), plat);
     send_direct(MSG_INFO, 0, text, (size_t)n, NULL, 0);
 }
@@ -633,6 +645,7 @@ static void handle(uint16_t type, uint16_t seq, const uint8_t *p, size_t n)
         for (int i = 0; i < 20; i++) diff |= mac[i] ^ p[16 + i];
         if (diff) {
             drop_conn("host failed authentication: check the key");
+            connect_fails++;
             retry_at = plat_ms() + 10000;
             return;
         }
@@ -737,12 +750,8 @@ static void start_connect(void)
     struct sockaddr_in a;
     memset(&a, 0, sizeof a);
     a.sin_family = AF_INET;
-    a.sin_port = htons(port);
-    if (inet_pton(AF_INET, host, &a.sin_addr) != 1) {
-        snprintf(off_reason, sizeof off_reason, "bad host address '%s'", host);
-        retry_at = plat_ms() + 5000;
-        return;
-    }
+    a.sin_port = htons(cur_port);
+    a.sin_addr.s_addr = cur_addr;
     sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) { retry_at = plat_ms() + 2000; return; }
     int one = 1;
@@ -762,7 +771,7 @@ static void start_connect(void)
     st = ST_CONNECTING;
     st_time = plat_ms();
     if (connect(sock, (struct sockaddr *)&a, sizeof a) == 0) on_connected();
-    else if (!would_block()) drop_conn("connect failed");
+    else if (!would_block()) { drop_conn("connect failed"); connect_fails++; }
 }
 
 static void check_connect(void)
@@ -780,11 +789,89 @@ static void check_connect(void)
         if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &err, &len) == 0 && err == 0 && !(pfd.revents & POLLERR))
             on_connected();
         else
-            drop_conn("host not reachable");
+            { drop_conn("host not reachable"); connect_fails++; }
         return;
     }
-    if (r < 0) { drop_conn("poll failed"); return; }
-    if (plat_ms() - st_time > CONNECT_TIMEOUT_MS) drop_conn("connect timeout");
+    if (r < 0) { drop_conn("poll failed"); connect_fails++; return; }
+    if (plat_ms() - st_time > CONNECT_TIMEOUT_MS) { drop_conn("connect timeout"); connect_fails++; }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Discovery
+
+static void stop_discovery(void)
+{
+    if (udp >= 0) sock_close(udp);
+    udp = -1;
+}
+
+static void start_discovery(void)
+{
+    udp = socket(AF_INET, SOCK_DGRAM, 0);
+    if (udp < 0) { retry_at = plat_ms() + 2000; return; }
+    int one = 1;
+    setsockopt(udp, SOL_SOCKET, SO_BROADCAST, &one, sizeof one);
+    fcntl(udp, F_SETFL, O_NONBLOCK);
+    uint32_t seed[4] = {plat_entropy(), plat_ms(), frame, (uint32_t)connect_fails};
+    uint8_t mac[20];
+    dsidbg__hmac_sha1(key, key_len, seed, sizeof seed, mac);
+    memcpy(disc_nonce, mac, 16);
+    st = ST_DISCOVER;
+    disc_until = plat_ms() + DISCOVER_MS;
+    disc_next = 0;
+}
+
+static void poll_discovery(uint32_t now)
+{
+    if ((int32_t)(now - disc_next) >= 0) {
+        uint8_t req[24];
+        memcpy(req, "DSDBGQ1", 8); // includes the terminating NUL: 8 bytes
+        memcpy(req + 8, disc_nonce, 16);
+        uint32_t targets[4];
+        int n = plat_discovery_targets(targets, 4);
+        for (int i = 0; i < n; i++) {
+            struct sockaddr_in to;
+            memset(&to, 0, sizeof to);
+            to.sin_family = AF_INET;
+            to.sin_port = htons(port);
+            to.sin_addr.s_addr = targets[i];
+            sendto(udp, req, sizeof req, 0, (struct sockaddr *)&to, sizeof to);
+        }
+        disc_next = now + DISCOVER_RESEND_MS;
+    }
+    for (;;) {
+        uint8_t ans[64];
+        struct sockaddr_in from;
+        socklen_t from_len = sizeof from;
+        long r = recvfrom(udp, ans, sizeof ans, 0, (struct sockaddr *)&from, &from_len);
+        if (r < 0) break;
+        if (r != 32 || memcmp(ans, "DSDBGA1", 8) != 0) continue;
+        // Check the signature: HMAC(key, "dsidbg-discover" nonce port)
+        uint8_t msg[15 + 16 + 2], mac[20];
+        memcpy(msg, "dsidbg-discover", 15);
+        memcpy(msg + 15, disc_nonce, 16);
+        memcpy(msg + 31, ans + 8, 2);
+        dsidbg__hmac_sha1(key, key_len, msg, sizeof msg, mac);
+        uint8_t diff = 0;
+        for (int i = 0; i < 20; i++) diff |= mac[i] ^ ans[12 + i];
+        if (diff) continue; // a daemon with another key
+        cur_addr = from.sin_addr.s_addr;
+        cur_port = (uint16_t)get16(ans + 8);
+        discovered = 1;
+        connect_fails = 0;
+        stop_discovery();
+        st = ST_DOWN;
+        retry_at = now;
+        dsidbg_log("dsidbg: found the computer at %s:%u by discovery", inet_ntoa(from.sin_addr), cur_port);
+        return;
+    }
+    if ((int32_t)(now - disc_until) >= 0) {
+        stop_discovery();
+        st = ST_DOWN;
+        snprintf(off_reason, sizeof off_reason, "no computer answered discovery");
+        if (cfg_addr) { cur_addr = cfg_addr; cur_port = port; discovered = 0; connect_fails = 0; }
+        retry_at = now + 2000;
+    }
 }
 
 static void service(void)
@@ -793,11 +880,17 @@ static void service(void)
     uint32_t now = plat_ms();
     if (!plat_net_poll()) {
         if (sock >= 0) drop_conn("wifi lost");
+        if (udp >= 0) { stop_discovery(); st = ST_DOWN; }
         return;
     }
     switch (st) {
     case ST_DOWN:
-        if ((int32_t)(now - retry_at) >= 0) start_connect();
+        if ((int32_t)(now - retry_at) < 0) break;
+        if (!cur_addr || connect_fails > 0) start_discovery();
+        else start_connect();
+        break;
+    case ST_DISCOVER:
+        poll_discovery(now);
         break;
     case ST_CONNECTING:
         check_connect();
@@ -885,10 +978,15 @@ int dsidbg_init(const dsidbg_config *in)
     if (!port) port = DEFAULT_PORT;
     key_len = strlen(key);
 
-    if (!host[0] || !key_len) {
-        snprintf(off_reason, sizeof off_reason, "no host/key: see %s", cfg.config_path);
+    if (!key_len) {
+        snprintf(off_reason, sizeof off_reason, "no key: see %s", cfg.config_path);
         return -1;
     }
+    // host= may be empty or "auto": then the agent finds the computer by discovery.
+    struct in_addr ha;
+    if (host[0] && strcmp(host, "auto") != 0 && inet_pton(AF_INET, host, &ha) == 1) cfg_addr = ha.s_addr;
+    cur_addr = cfg_addr;
+    cur_port = port;
     if (plat_init(&cfg, ssid[0] ? ssid : NULL, pass) != 0) {
         snprintf(off_reason, sizeof off_reason, "wifi init failed");
         return -1;
@@ -916,17 +1014,28 @@ void dsidbg_frame(void)
 
 int dsidbg_connected(void) { return st == ST_READY; }
 
+static const char *cur_text(void)
+{
+    static char buf[32];
+    struct in_addr a;
+    a.s_addr = cur_addr;
+    if (!cur_addr) return "the computer";
+    snprintf(buf, sizeof buf, "%s:%u", inet_ntoa(a), cur_port);
+    return buf;
+}
+
 const char *dsidbg_status(void)
 {
     switch (st) {
     case ST_OFF: snprintf(status_text, sizeof status_text, "off: %s", off_reason); break;
     case ST_DOWN:
         if (!plat_net_poll()) snprintf(status_text, sizeof status_text, "wifi: %s", plat_net_state());
-        else snprintf(status_text, sizeof status_text, "waiting for %s:%u (%.60s)", host, port, off_reason);
+        else snprintf(status_text, sizeof status_text, "waiting for %s (%.60s)", cur_text(), off_reason);
         break;
-    case ST_CONNECTING: snprintf(status_text, sizeof status_text, "connecting to %s:%u", host, port); break;
+    case ST_DISCOVER: snprintf(status_text, sizeof status_text, "searching for the computer"); break;
+    case ST_CONNECTING: snprintf(status_text, sizeof status_text, "connecting to %s", cur_text()); break;
     case ST_HANDSHAKE: snprintf(status_text, sizeof status_text, "authenticating"); break;
-    case ST_READY: snprintf(status_text, sizeof status_text, "connected to %s:%u", host, port); break;
+    case ST_READY: snprintf(status_text, sizeof status_text, "connected to %s", cur_text()); break;
     }
     return status_text;
 }

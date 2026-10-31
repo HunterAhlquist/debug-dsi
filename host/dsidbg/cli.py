@@ -311,7 +311,7 @@ def launch(path, wait, timeout):
 def do_push(a):
     remote = sd_path(a.to or "sd:/dsidbg/apps/" + os.path.basename(a.local))
     r = call({"cmd": "put", "local": os.path.abspath(a.local), "remote": remote, "timeout": a.timeout})
-    print("%s: %d bytes in %.1f s (%.0f KiB/s)" % (remote, r["bytes"], r["seconds"], r["kib_per_s"]))
+    print("%s: %d bytes in %.1f s (%.1f KiB/s)" % (remote, r["bytes"], r["seconds"], r["kib_per_s"]))
     if a.elf:
         call({"cmd": "elf", "app": a.app or os.path.splitext(os.path.basename(a.local))[0], "path": a.elf})
     if a.launch:

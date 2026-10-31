@@ -302,6 +302,34 @@ class EndToEnd(unittest.TestCase):
             self.sim.send_signal(signal.SIGCONT)
         self.start_sim()
 
+    def test_15_discovery_without_a_host(self):
+        self.start_sim("--host", "")
+        st = cli.call({"cmd": "status"})
+        self.assertEqual(st["info"]["host_from"], "discovery")
+        self.log_contains("found the computer at 127.0.0.1:%d by discovery" % self.port)
+
+    def test_16_stale_host_falls_back_to_discovery(self):
+        # The computer's address changed: the configured one doesn't answer, discovery finds the daemon.
+        gen = cli.call({"cmd": "status"})["generation"]
+        self.stop_sim()
+        self.sim = subprocess.Popen([SIM, "--host", "127.0.0.2", "--port", str(self.port), "--key", self.key,
+                                     "--root", self.sd], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        w = cli.call({"cmd": "wait", "newer_than": gen, "timeout": 15})
+        self.assertEqual(w["app"], "sim")
+        self.assertEqual(cli.call({"cmd": "status"})["info"]["host_from"], "discovery")
+
+    def test_17_discovery_ignores_other_keys(self):
+        gen = cli.call({"cmd": "status"})["generation"]
+        other = subprocess.Popen([SIM, "--host", "", "--port", str(self.port), "--key", "another key", "--root",
+                                  self.sd, "--name", "stranger"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            with self.assertRaises(cli.CliError):  # it hears the daemon but rejects its signed answers
+                cli.call({"cmd": "wait", "app": "stranger", "newer_than": gen, "timeout": 3})
+        finally:
+            other.kill()
+            other.communicate()
+        self.assertIn("discovery request from 127.0.0.1", read(os.path.join(self.home, "daemon.log")))
+
     def test_14_status_json(self):
         st = json.loads(self.run_cli("status", "--json").stdout)
         self.assertTrue(st["connected"])

@@ -57,6 +57,11 @@ Requirements: a DSi with Unlaunch and an SD card, Docker (for the BlocksDS toolc
    This writes `sd:/dsidbg/config.ini` (your computer's address, port and key) and copies the loader to
    `sd:/dsidbg/dsidbg-loader.nds`. Without `--sd` it prints the file for you to copy. If the loader starts without
    a `config.ini`, it writes a blank one (empty `host` and `key`) and says so on the top screen.
+   If this computer's address changes later, the DSi finds it anyway: when the configured address doesn't answer
+   (or `host=` is empty or `auto`), it broadcasts a discovery request on the local network and connects to the
+   daemon that answers with a reply signed with its key. That costs a few seconds per boot; set up the card again to
+   make it fast. Discovery needs the DSi and computer on the same network segment (it doesn't work through
+   melonDS's network emulation).
 4. Wi-Fi: by default the DSi uses its saved connections (System Settings > Internet; WPA2 networks go in the
    advanced slots 4-6). Or pass `--ssid NAME --pass PASSWORD` to `setup`.
 5. Make the loader start after every reboot, so a crash never needs you to touch the console. Two options:

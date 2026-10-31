@@ -68,6 +68,24 @@ def dev_mac(key, nonce_h, nonce_d):
     return hmac.new(key, b"dsidbg-dev" + nonce_h + nonce_d, hashlib.sha1).digest()
 
 
+# Discovery (UDP, on the daemon's port): the DSi broadcasts DISCOVER_Q + nonce[16]; the daemon answers with
+# DISCOVER_A + u16 tcp port + u16 0 + HMAC(key, "dsidbg-discover" nonce port). Only a daemon with the DSi's key
+# gives an answer the DSi accepts.
+DISCOVER_Q = b"DSDBGQ1\0"
+DISCOVER_A = b"DSDBGA1\0"
+
+
+def discover_mac(key, nonce, port):
+    return hmac.new(key, b"dsidbg-discover" + nonce + struct.pack("<H", port), hashlib.sha1).digest()
+
+
+def discover_reply(key, request, port):
+    """The answer to a discovery request, or None if `request` isn't one."""
+    if len(request) != 24 or request[:8] != DISCOVER_Q:
+        return None
+    return DISCOVER_A + struct.pack("<HH", port, 0) + discover_mac(key, request[8:], port)
+
+
 def parse_keys(text):
     """'A+B' or 'a,start' -> bitmask."""
     mask = 0

@@ -251,6 +251,16 @@ uint32_t plat_entropy(void)
     return (uint32_t)time(NULL) * 2654435761u ^ (uint32_t)REG_VCOUNT << 16 ^
            TIMER_DATA(LIBNDS_DEFAULT_TIMER_WIFI) ^ vblanks * 40503u;
 }
+int plat_discovery_targets(uint32_t *addrs, int max)
+{
+    // The limited broadcast address, and the subnet's directed broadcast when DHCP gave us a netmask.
+    int n = 0;
+    if (max > n) addrs[n++] = 0xFFFFFFFFu;
+    struct in_addr gw, mask, dns1, dns2;
+    struct in_addr ip = Wifi_GetIPInfo(&gw, &mask, &dns1, &dns2);
+    if (ip.s_addr && mask.s_addr && max > n) addrs[n++] = ip.s_addr | ~mask.s_addr;
+    return n;
+}
 void plat_yield(void) { cothread_yield(); }
 
 void plat_wait_frame(void)

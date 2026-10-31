@@ -7,6 +7,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <arpa/inet.h>
+
 #include "internal.h"
 
 static const char *sd_root = ".";
@@ -38,6 +40,15 @@ uint32_t plat_entropy(void)
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     return (uint32_t)ts.tv_nsec ^ (uint32_t)ts.tv_sec * 2654435761u ^ (uint32_t)getpid() << 16;
+}
+int plat_discovery_targets(uint32_t *addrs, int max)
+{
+    // The simulator asks on loopback (DSIDBG_SIM_DISCOVER overrides it, e.g. a broadcast address).
+    const char *to = getenv("DSIDBG_SIM_DISCOVER");
+    struct in_addr a;
+    if (max < 1 || inet_pton(AF_INET, to ? to : "127.0.0.1", &a) != 1) return 0;
+    addrs[0] = a.s_addr;
+    return 1;
 }
 void plat_yield(void) { usleep(200); }
 void plat_wait_frame(void) { usleep(16667); }

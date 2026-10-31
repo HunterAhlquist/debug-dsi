@@ -172,6 +172,8 @@ class Device:
                 elif msg_type == proto.INFO:
                     self.info = proto.parse_kv(p)
                     d.note("info from %s: %s" % (self.app, self.info))
+                    with d.lock:
+                        d.lock.notify_all()
                 elif msg_type == proto.STATUS:
                     self.status = proto.parse_kv(p)
                     self.status["_time"] = time.time()
@@ -386,8 +388,33 @@ class Daemon:
                 self.note("device %s silent for %.0f s, dropping the connection" % (dev.app, SILENCE_TIMEOUT))
                 dev.close()
 
+    def serve_discovery(self):
+        """Answers DSi discovery broadcasts (UDP on the daemon's port) so a DSi finds this computer after its address
+        changes. The answer is signed with the shared key."""
+        udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            udp.bind((self.bind, self.port))
+        except OSError as e:
+            self.note("discovery unavailable: %s" % e)
+            return
+        last_note = {}
+        while not self.stopping:
+            try:
+                data, addr = udp.recvfrom(64)
+                reply = proto.discover_reply(self.key, data, self.port)
+                if reply is None:
+                    continue
+                udp.sendto(reply, addr)
+                if time.time() - last_note.get(addr[0], 0) > 60:  # a searching DSi asks every second
+                    self.note("discovery request from %s" % addr[0])
+                    last_note[addr[0]] = time.time()
+            except OSError:
+                time.sleep(0.5)
+
     def run(self):
         threading.Thread(target=self.serve_devices, daemon=True).start()
+        threading.Thread(target=self.serve_discovery, daemon=True).start()
         threading.Thread(target=self.check_silence, daemon=True).start()
         self.serve_control()
 
@@ -408,7 +435,8 @@ class Daemon:
         with self.lock:
             while True:
                 dev = self.device
-                if dev and dev.alive and dev.generation > newer and (not app or dev.app == app):
+                # The device sends INFO right after the handshake; wait for it so callers see a complete status.
+                if dev and dev.alive and dev.info and dev.generation > newer and (not app or dev.app == app):
                     return {"app": dev.app, "build": dev.build, "generation": dev.generation}
                 left = deadline - time.time()
                 if left <= 0:

@@ -15,6 +15,20 @@ Every message is an 8-byte little-endian header followed by the payload:
 
 The device accepts payloads up to 20 KiB, so the host sends files in 16 KiB chunks.
 
+## Discovery (UDP)
+
+When the configured host doesn't answer, or none is configured, the device looks for the daemon on its local network.
+It sends to the daemon's port number (UDP) on the limited broadcast address and on the subnet's directed broadcast
+address, once a second for 5 seconds:
+
+| Direction | Bytes |
+| --- | --- |
+| request (device, broadcast) | `"DSDBGQ1\0"`, nonce[16] |
+| answer (daemon, to the sender) | `"DSDBGA1\0"`, u16 TCP port, u16 0, HMAC-SHA1(key, "dsidbg-discover" ‖ nonce ‖ port as u16 LE) |
+
+The device ignores answers whose signature doesn't match its key, and connects to the first valid answer's source
+address and TCP port. Without an answer it tries the configured host again.
+
 ## Handshake
 
 Both sides share a key (`key=` in `sd:/dsidbg/config.ini`, `~/.dsidbg/key` on the host). Each side proves it knows
