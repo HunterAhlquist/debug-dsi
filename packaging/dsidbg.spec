@@ -38,7 +38,9 @@ backends = ["pystray._darwin"] if MAC else ["pystray._win32"] if WIN else ["pyst
 a = Analysis(
     [os.path.join(SPECPATH, "entry.py")],
     pathex=[os.path.join(ROOT, "host")],
-    datas=[(LOADER, ".")],
+    # Inside the app (Contents/Resources on macOS), added before the bundle is signed: "Set Up SD Card..." copies the
+    # loader from here, so the download is the app alone.
+    datas=[(LOADER, "."), (os.path.join(ROOT, "LICENSE"), ".")],
     hiddenimports=backends + ["dsidbg.daemon", "dsidbg.install", "dsidbg.mcp", "dsidbg.native", "dsidbg.tray"],
     excludes=["tkinter"],
 )

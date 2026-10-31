@@ -38,15 +38,26 @@ Each [release](../../releases) has:
 
 | File | Contents |
 | --- | --- |
-| `dsidbg-macos.zip` | `dsidbg.app` (menu bar app, CLI, daemon, MCP server; Apple silicon) and the loader |
-| `dsidbg-windows.zip` | `dsidbg\dsidbg.exe` (tray app when opened, CLI from a terminal) and the loader |
-| `dsidbg-linux.tar.gz` | `dsidbg/dsidbg` (tray app when run without arguments, CLI otherwise) and the loader |
+| `dsidbg-macos.zip` | `dsidbg.app`: menu bar app, CLI, daemon and MCP server (Apple silicon) |
+| `dsidbg-windows.zip` | the `dsidbg` folder: `dsidbg.exe` is the tray app when opened, the CLI from a terminal |
+| `dsidbg-linux.tar.gz` | the `dsidbg` folder: `dsidbg` is the tray app when run without arguments, the CLI otherwise |
 | `dsidbg-loader.nds`, `dsidbg-demo.nds` | the loader on its own, and the demo app |
 | `dsidbg-lib.zip` | the agent library for your own app: unzip into `$BLOCKSDSEXT` (see below) |
 
-The apps include Python and the tray's packages, and "Set Up SD Card..." copies their bundled loader. They aren't
-signed: on macOS, right-click the app and choose Open the first time; on Windows, choose More info > Run anyway.
-Move `dsidbg.app` to Applications before using "Install MCP", since the MCP configuration points at the app.
+Each app includes Python, the tray's packages and the loader: "Set Up SD Card..." copies the loader to the card,
+so there is nothing else to put anywhere.
+
+- **macOS:** unzipping gives `dsidbg.app`. Move it to Applications, then open it. It isn't notarized: the first
+  time, right-click it, choose Open and confirm. It appears in the menu bar (a small DS). Move it before using
+  "Install MCP", since the MCP configuration points at the app. The CLI is
+  `/Applications/dsidbg.app/Contents/MacOS/dsidbg` ("Open Terminal" in the menu puts it on the PATH).
+- **Windows:** unzip the `dsidbg` folder somewhere permanent and open `dsidbg.exe`. It isn't signed: choose More
+  info > Run anyway. It appears in the system tray.
+- **Linux:** extract the `dsidbg` folder somewhere permanent and run `dsidbg/dsidbg`. The tray needs X11 or, on
+  GNOME, an AppIndicator extension; dialogs need zenity or kdialog.
+
+Then put the DSi's SD card in the computer, choose "Set Up SD Card...", and "Install MCP" for Claude Code, Codex
+and Claude Desktop.
 
 ## Setup
 

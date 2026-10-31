@@ -92,6 +92,7 @@ They pass on macOS (Python 3.9) and on Linux (Python 3.12, in a container).
 | Menu bar app: icon, live status, Install MCP message, folder picker | pass (Open Terminal and Quit not clicked) |
 | Tray restarts itself after a code update | pass |
 | Packaged `dsidbg.app`: CLI, SD setup with the bundled loader, MCP server starting its daemon, tray opened from Finder, zip keeps the code signature | pass |
+| Release zip holds only `dsidbg.app`; the unzipped app's SD setup copies its bundled loader (identical to the build) | pass (2026-10-31; Windows and Linux archives only built in CI) |
 | `mcp-install` into Claude Code, Codex and Claude Desktop | pass (Claude Desktop must be closed, see below) |
 
 ## 2. Known issues and limits
