@@ -1,0 +1,4 @@
+#!/bin/sh
+# dsidbg command line (see `dsidbg -h`). Needs only Python 3.
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+PYTHONPATH="$HERE/host${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m dsidbg "$@"
