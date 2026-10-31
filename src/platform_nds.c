@@ -22,17 +22,30 @@ void dsidbg__panic_switch(void) __attribute__((noreturn));
 VoidFn dsidbg__irq_next;
 
 static volatile uint32_t vblanks, since_beat, watchdog_frames;
+static volatile uint32_t ms_now, ms_frac; // milliseconds, kept in 32-bit integers (no 64-bit division)
 static int hooked;
 
 // ---------------------------------------------------------------------------------------------------------------
 // Time, watchdog, IRQ hook
 
-uint32_t plat_ms(void) { return (uint32_t)((uint64_t)vblanks * 16715 / 1000); } // 59.83 Hz
+// One frame is 16.715 ms (59.83 Hz): add 16 ms, and carry the 0.715 ms remainder in thousandths.
+static inline void count_frame(void)
+{
+    vblanks++;
+    ms_now += 16;
+    ms_frac += 715;
+    if (ms_frac >= 1000) {
+        ms_frac -= 1000;
+        ms_now++;
+    }
+}
+
+uint32_t plat_ms(void) { return ms_now; }
 
 void plat_heartbeat(void)
 {
     since_beat = 0;
-    if (!hooked) vblanks++; // no IRQ hook: approximate time by frames
+    if (!hooked) count_frame(); // no IRQ hook: approximate time by frames
 }
 
 void plat_set_watchdog(unsigned seconds) { watchdog_frames = seconds * 60; }
@@ -51,7 +64,7 @@ ARM_CODE uint32_t dsidbg__irq_hook(uint32_t pc, uint32_t pending)
     if (bit == IRQ_TIMER(LIBNDS_DEFAULT_TIMER_WIFI)) {
         dsidbg__prof_sample(pc);
     } else if (bit == IRQ_VBLANK) {
-        vblanks++;
+        count_frame();
         if (watchdog_frames && !dsidbg__in_panic && ++since_beat > watchdog_frames) {
             volatile uint32_t *w = (volatile uint32_t *)&dsidbg__crash;
             for (unsigned i = 0; i < sizeof dsidbg__crash / 4; i++) w[i] = 0;

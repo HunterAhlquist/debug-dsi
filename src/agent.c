@@ -15,18 +15,19 @@
 #include <netinet/tcp.h>
 #include <sys/socket.h>
 
+#include <unistd.h>
+
 #ifdef DSIDBG_NDS
 #define sock_close closesocket
 #else
 #include <poll.h>
-#include <unistd.h>
 #define sock_close close
 #endif
 
 #include "internal.h"
 
 #define DEFAULT_PORT 7710
-#define TXQ_SIZE     65536 // power of two
+#define TXQ_DEFAULT_KIB 16 // send queue, allocated by dsidbg_init()
 #define LOGLINE_MAX  512
 #define MAX_INJECT   32
 #define PROF_N       4096 // power of two
@@ -59,14 +60,26 @@ static uint32_t log_drops;
 static int crash_files_done;
 
 // Outgoing queue for asynchronous messages (logs, status, data, profiler). Replies bypass it via send_direct(),
-// which drains it first so the stream stays in order.
-static uint8_t txq[TXQ_SIZE];
+// which drains it first so the stream stays in order. It and the receive buffer are allocated by dsidbg_init(), so
+// an app that never starts the agent doesn't pay for them.
+static uint8_t *txq;
+static uint32_t txq_size; // power of two
 static uint32_t txq_r, txq_w;
 
 static char logline[LOGLINE_MAX];
 static size_t loglen;
 
-static uint8_t rxbuf[PROTO_HEADER + PROTO_MAX_RX];
+#define RX_CAP (PROTO_HEADER + PROTO_MAX_RX)
+
+// Buffers the SD card driver reads into or writes from by DMA must own whole cache lines (32 bytes on the DSi):
+// a line shared with other data (heap bookkeeping, say) can be written back over freshly DMA'd bytes.
+#define DMA_ALIGN 32
+static void *dma_alloc(size_t n) { return aligned_alloc(DMA_ALIGN, (n + DMA_ALIGN - 1) & ~(size_t)(DMA_ALIGN - 1)); }
+
+#define PUT_BUFFER (32 * 1024) // uploads go to the card in pieces this big (fewer, faster SD writes)
+static uint8_t *put_buf;       // allocated during an upload only
+static size_t put_fill;
+static uint8_t *rxbuf;
 static size_t rxlen;
 
 typedef struct { uint32_t start, end, keys, flags; int16_t x, y; } inject_t;
@@ -74,11 +87,33 @@ static inject_t inj[MAX_INJECT];
 static int ninj;
 static uint32_t held, down, up, prev_held;
 
-static volatile uint32_t prof_buf[PROF_N];
+static volatile uint32_t *prof_buf; // allocated while profiling
 static volatile uint32_t prof_w, prof_r;
 static volatile int prof_on;
 
-static FILE *put_f;
+// Uploads use the file descriptor API with their own aligned buffer: stdio would split them into small writes.
+static int put_fd = -1;
+static int put_flush(void)
+{
+    size_t done = 0;
+    while (done < put_fill) {
+        ssize_t w = write(put_fd, put_buf + done, put_fill - done);
+        if (w <= 0) return -1;
+        done += (size_t)w;
+    }
+    put_fill = 0;
+    return 0;
+}
+static int put_close(void)
+{
+    int r = 0;
+    if (put_fd >= 0) r = close(put_fd);
+    put_fd = -1;
+    free(put_buf);
+    put_buf = NULL;
+    put_fill = 0;
+    return r;
+}
 static char put_local[256], put_tmp[264];
 static uint32_t put_size, put_crc, put_got, put_crc_now;
 static int put_err;
@@ -141,7 +176,7 @@ static uint32_t txq_used(void) { return txq_w - txq_r; }
 static int queue_msg(uint16_t type, const void *a, size_t alen, const void *b, size_t blen)
 {
     size_t total = PROTO_HEADER + alen + blen;
-    if (total > TXQ_SIZE - txq_used()) return -1;
+    if (!txq || total > txq_size - txq_used()) return -1;
     uint8_t hdr[PROTO_HEADER];
     put32(hdr, (uint32_t)(alen + blen));
     put16(hdr + 4, type);
@@ -150,12 +185,18 @@ static int queue_msg(uint16_t type, const void *a, size_t alen, const void *b, s
     size_t lens[3] = {PROTO_HEADER, alen, blen};
     for (int i = 0; i < 3; i++)
         for (size_t j = 0; j < lens[i]; j++)
-            txq[(txq_w++) & (TXQ_SIZE - 1)] = parts[i][j];
+            txq[(txq_w++) & (txq_size - 1)] = parts[i][j];
     return 0;
 }
 
+// Agent steps, logged with DSIDBG_TRACE (and shown on screen with DSIDBG_ECHO_LOG): after a freeze the last line
+// says where the agent was.
+#define TRACE(...) do { if (cfg.flags & DSIDBG_TRACE) { dsidbg_log("dsidbg: " __VA_ARGS__); log_flush(); } } while (0)
+static void log_flush(void);
+
 static void drop_conn(const char *why)
 {
+    TRACE("drop: %s (state %d, upload %s)", why, st, put_fd >= 0 ? "open" : "none");
     if (sock >= 0) sock_close(sock);
     sock = -1;
     // The queue is only sent once authenticated. After that, a partly sent message can't be resumed on a new
@@ -164,7 +205,12 @@ static void drop_conn(const char *why)
     st = ST_DOWN;
     retry_at = plat_ms() + 2000;
     rxlen = 0;
-    if (put_f) { fclose(put_f); put_f = NULL; remove(put_tmp); }
+    if (put_fd >= 0) {
+        put_close();
+        TRACE("drop: upload file closed");
+        remove(put_tmp);
+        TRACE("drop: partial upload removed");
+    }
     snprintf(off_reason, sizeof off_reason, "%s", why);
 }
 
@@ -193,9 +239,9 @@ static long raw_send(const void *p, size_t n, int block)
 static int flush_tx(int block)
 {
     while (sock >= 0 && txq_used()) {
-        uint32_t at = txq_r & (TXQ_SIZE - 1);
+        uint32_t at = txq_r & (txq_size - 1);
         uint32_t chunk = txq_used();
-        if (chunk > TXQ_SIZE - at) chunk = TXQ_SIZE - at;
+        if (chunk > txq_size - at) chunk = txq_size - at;
         long r = raw_send(txq + at, chunk, block);
         if (r < 0) return -1;
         txq_r += (uint32_t)r;
@@ -251,6 +297,7 @@ static void log_flush(void)
 
 void dsidbg_write(const char *text, size_t len)
 {
+    if (cfg.flags & DSIDBG_ECHO_LOG) plat_console_write(text, len);
     for (size_t i = 0; i < len; i++) {
         logline[loglen++] = text[i];
         if (text[i] == '\n' || loglen == LOGLINE_MAX) log_flush();
@@ -326,17 +373,18 @@ void dsidbg__prof_sample(uint32_t pc)
 }
 
 // Sends up to `max` buffered samples. direct=1 sends now, otherwise through the queue. Returns samples sent.
+// The samples go out straight from the ring (no copy): both the DSi and the simulator's hosts are little-endian.
 static uint32_t prof_flush(uint32_t max, int direct)
 {
-    static uint32_t pcs[1 + 1024]; // static: app stacks (DTCM) are small
-    uint32_t n = prof_w - prof_r;
+    if (!prof_buf) return 0;
+    uint32_t n = prof_w - prof_r, at = prof_r & (PROF_N - 1);
     if (n > max) n = max;
-    if (n > 1024) n = 1024;
+    if (n > PROF_N - at) n = PROF_N - at; // contiguous part of the ring
     if (!n) return 0;
-    uint8_t *p = (uint8_t *)pcs;
-    put32(p, plat_prof_hz());
-    for (uint32_t i = 0; i < n; i++) put32(p + 4 + i * 4, prof_buf[(prof_r + i) & (PROF_N - 1)]);
-    int r = direct ? send_direct(MSG_PROF, 0, p, 4 + n * 4, NULL, 0) : queue_msg(MSG_PROF, p, 4 + n * 4, NULL, 0);
+    uint8_t hz[4];
+    put32(hz, plat_prof_hz());
+    const void *pcs = (const void *)&prof_buf[at];
+    int r = direct ? send_direct(MSG_PROF, 0, hz, 4, pcs, n * 4) : queue_msg(MSG_PROF, hz, 4, pcs, n * 4);
     if (r < 0) return 0;
     prof_r += n;
     return n;
@@ -388,13 +436,15 @@ static void send_crash_files(void)
         FILE *f = fopen(path, "rb");
         if (!f) continue;
         dsidbg_crash c;
-        static uint8_t stack[CRASH_STACK_MAX];
+        uint8_t *stack = malloc(CRASH_STACK_MAX);
         size_t got = fread(&c, 1, sizeof c, f);
-        size_t sl = got == sizeof c ? fread(stack, 1, sizeof stack, f) : 0;
+        size_t sl = got == sizeof c && stack ? fread(stack, 1, CRASH_STACK_MAX, f) : 0;
         fclose(f);
-        if (got != sizeof c) continue;
+        if (got != sizeof c) { free(stack); continue; }
         c.flags |= CRASH_FROM_FILE;
-        if (send_crash(&c, stack, sl) < 0) break;
+        int sent_ok = send_crash(&c, stack, sl) == 0;
+        free(stack);
+        if (!sent_ok) break;
         snprintf(sent, sizeof sent, "%s.sent", path);
         remove(sent);
         rename(path, sent);
@@ -519,7 +569,7 @@ static void cmd_reboot(uint16_t seq, const uint8_t *p, size_t n)
 static void cmd_put_begin(uint16_t seq, const uint8_t *p, size_t n)
 {
     char path[256];
-    if (put_f) { fclose(put_f); put_f = NULL; remove(put_tmp); }
+    if (put_fd >= 0) { put_close(); remove(put_tmp); }
     put_err = 0;
     if (n < 9) { ack(seq, -1, "bad request"); return; }
     put_size = get32(p);
@@ -528,26 +578,37 @@ static void cmd_put_begin(uint16_t seq, const uint8_t *p, size_t n)
     if (local_path(path, put_local, sizeof put_local) < 0) { ack(seq, -1, "path must be on sd:/"); return; }
     snprintf(put_tmp, sizeof put_tmp, "%s.part", put_local);
     mkdirs_for(put_tmp);
-    put_f = fopen(put_tmp, "wb");
-    if (!put_f) { ack(seq, -1, "can't create %s (errno %d)", path, errno); return; }
+    put_buf = dma_alloc(PUT_BUFFER);
+    if (!put_buf) { ack(seq, -1, "out of memory"); return; }
+    put_fd = open(put_tmp, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (put_fd < 0) { put_close(); ack(seq, -1, "can't create %s (errno %d)", path, errno); return; }
     put_got = 0;
+    TRACE("upload: %s, %lu bytes", path, (unsigned long)put_size);
     put_crc_now = 0;
     ack(seq, 0, "ok");
 }
 
 static void cmd_put_data(const uint8_t *p, size_t n)
 {
-    if (!put_f || put_err) return;
-    if (fwrite(p, 1, n, put_f) != n) put_err = errno ? errno : EIO;
+    if (put_fd < 0 || put_err) return;
     put_got += (uint32_t)n;
     put_crc_now = dsidbg__crc32(put_crc_now, p, n);
+    while (n) {
+        size_t take = PUT_BUFFER - put_fill;
+        if (take > n) take = n;
+        memcpy(put_buf + put_fill, p, take);
+        put_fill += take;
+        p += take;
+        n -= take;
+        if (put_fill == PUT_BUFFER && put_flush() < 0) { put_err = errno ? errno : EIO; return; }
+    }
 }
 
 static void cmd_put_end(uint16_t seq)
 {
-    if (!put_f) { ack(seq, -1, "no transfer in progress"); return; }
-    int close_err = fclose(put_f);
-    put_f = NULL;
+    if (put_fd < 0) { ack(seq, -1, "no transfer in progress"); return; }
+    if (!put_err && put_flush() < 0) put_err = errno ? errno : EIO;
+    int close_err = put_close();
     if (put_err || close_err) { remove(put_tmp); ack(seq, -1, "write failed (errno %d)", put_err); return; }
     if (put_got != put_size || put_crc_now != put_crc) {
         remove(put_tmp);
@@ -556,6 +617,7 @@ static void cmd_put_end(uint16_t seq)
     }
     remove(put_local);
     if (rename(put_tmp, put_local) != 0) { ack(seq, -1, "rename failed (errno %d)", errno); return; }
+    TRACE("upload: done");
     ack(seq, 0, "%lu bytes", (unsigned long)put_got);
 }
 
@@ -566,17 +628,20 @@ static void cmd_get(uint16_t seq, const uint8_t *p, size_t n)
     if (local_path(path, local, sizeof local) < 0) { ack(seq, -1, "path must be on sd:/"); return; }
     FILE *f = fopen(local, "rb");
     if (!f) { ack(seq, -1, "%s not found", path); return; }
-    static uint8_t buf[8192];
+    enum { CHUNK = 4096 };
+    uint8_t *buf = dma_alloc(CHUNK);
+    if (!buf) { fclose(f); ack(seq, -1, "out of memory"); return; }
     uint32_t size = 0, crc = 0;
     size_t got;
-    while ((got = fread(buf, 1, sizeof buf, f)) > 0) {
-        if (send_direct(MSG_FILE_DATA, seq, buf, got, NULL, 0) < 0) { fclose(f); return; }
+    while ((got = fread(buf, 1, CHUNK, f)) > 0) {
+        if (send_direct(MSG_FILE_DATA, seq, buf, got, NULL, 0) < 0) { fclose(f); free(buf); return; }
         size += (uint32_t)got;
         crc = dsidbg__crc32(crc, buf, got);
         plat_heartbeat();
     }
     int err = ferror(f);
     fclose(f);
+    free(buf);
     uint8_t end[12];
     put32(end, (uint32_t)(err ? -1 : 0));
     put32(end + 4, size);
@@ -592,20 +657,23 @@ static void cmd_list(uint16_t seq, const uint8_t *p, size_t n)
     if (local_path(path, local, sizeof local) < 0) { ack(seq, -1, "path must be on sd:/"); return; }
     DIR *d = opendir(local);
     if (!d) { ack(seq, -1, "can't open %s", path); return; }
-    static char out[16384];
+    enum { OUT_CAP = 16384 };
+    char *out = malloc(OUT_CAP);
+    if (!out) { closedir(d); ack(seq, -1, "out of memory"); return; }
     size_t len = 0;
     struct dirent *e;
-    while ((e = readdir(d)) != NULL && len < sizeof out - 300) {
+    while ((e = readdir(d)) != NULL && len < OUT_CAP - 300) {
         if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
         char full[600];
         struct stat sb;
         snprintf(full, sizeof full, "%s%s%s", local, local[strlen(local) - 1] == '/' ? "" : "/", e->d_name);
         int ok = stat(full, &sb) == 0;
-        len += (size_t)snprintf(out + len, sizeof out - len, "%c\t%lu\t%s\n", ok && S_ISDIR(sb.st_mode) ? 'D' : 'F',
+        len += (size_t)snprintf(out + len, OUT_CAP - len, "%c\t%lu\t%s\n", ok && S_ISDIR(sb.st_mode) ? 'D' : 'F',
                                 ok ? (unsigned long)sb.st_size : 0ul, e->d_name);
     }
     closedir(d);
     ack_text(seq, 0, out, len);
+    free(out);
 }
 
 static void cmd_delete(uint16_t seq, const uint8_t *p, size_t n)
@@ -622,15 +690,18 @@ static void cmd_delete(uint16_t seq, const uint8_t *p, size_t n)
 
 static void cmd_app(uint16_t seq, const uint8_t *p, size_t n)
 {
+    enum { REPLY_CAP = 4096 };
     char line[1024];
-    static char reply[4096];
     payload_str(p, n, line, sizeof line);
     if (dsidbg__in_panic) { ack(seq, -1, "the app has crashed"); return; }
     if (!cfg.command) { ack(seq, -1, "the app has no command handler"); return; }
+    char *reply = malloc(REPLY_CAP);
+    if (!reply) { ack(seq, -1, "out of memory"); return; }
     reply[0] = 0;
-    int r = cfg.command(line, reply, sizeof reply);
-    reply[sizeof reply - 1] = 0;
+    int r = cfg.command(line, reply, REPLY_CAP);
+    reply[REPLY_CAP - 1] = 0;
     ack_text(seq, r, reply, strlen(reply));
+    free(reply);
 }
 
 static void handle(uint16_t type, uint16_t seq, const uint8_t *p, size_t n)
@@ -657,6 +728,7 @@ static void handle(uint16_t type, uint16_t seq, const uint8_t *p, size_t n)
         dsidbg__hmac_sha1(key, key_len, msg2, sizeof msg2, mac);
         if (send_direct(MSG_PROOF, 0, mac, 20, NULL, 0) < 0) return;
         st = ST_READY;
+        TRACE("authenticated");
         crash_files_done = 0;
         send_info();
         return;
@@ -674,13 +746,16 @@ static void handle(uint16_t type, uint16_t seq, const uint8_t *p, size_t n)
     case MSG_LIST: cmd_list(seq, p, n); break;
     case MSG_DELETE: cmd_delete(seq, p, n); break;
     case MSG_PROF_START:
+        if (!prof_buf && !(prof_buf = malloc(PROF_N * sizeof *prof_buf))) { ack(seq, -1, "out of memory"); break; }
         prof_r = prof_w;
-        prof_on = 1;
+        prof_on = 1; // after the buffer exists: the IRQ hook checks only this
         ack(seq, 0, "%lu Hz", (unsigned long)plat_prof_hz());
         break;
     case MSG_PROF_STOP:
         prof_on = 0;
         while (prof_flush(1024, 1)) {}
+        free((void *)prof_buf);
+        prof_buf = NULL;
         ack(seq, 0, "stopped");
         break;
     case MSG_APP_CMD: cmd_app(seq, p, n); break;
@@ -697,7 +772,7 @@ static void handle(uint16_t type, uint16_t seq, const uint8_t *p, size_t n)
 static void pump_rx(void)
 {
     for (;;) {
-        long r = recv(sock, rxbuf + rxlen, sizeof rxbuf - rxlen, 0);
+        long r = recv(sock, rxbuf + rxlen, RX_CAP - rxlen, 0);
         if (r == 0) { drop_conn("host closed the connection"); return; }
         if (r < 0) {
             if (!would_block()) drop_conn("receive failed");
@@ -713,7 +788,7 @@ static void pump_rx(void)
             rxlen -= PROTO_HEADER + len;
             memmove(rxbuf, rxbuf + PROTO_HEADER + len, rxlen);
         }
-        if (rxlen == sizeof rxbuf) { drop_conn("receive buffer full"); return; }
+        if (rxlen == RX_CAP) { drop_conn("receive buffer full"); return; }
     }
 }
 
@@ -732,6 +807,7 @@ static void make_nonce(void)
 
 static void on_connected(void)
 {
+    TRACE("tcp connected");
     uint8_t hello[4 + 16 + 160];
     size_t n = 0;
     st = ST_HANDSHAKE;
@@ -753,6 +829,7 @@ static void start_connect(void)
     a.sin_family = AF_INET;
     a.sin_port = htons(cur_port);
     a.sin_addr.s_addr = cur_addr;
+    TRACE("connect: %s:%u", inet_ntoa(a.sin_addr), cur_port);
     sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) { retry_at = plat_ms() + 2000; return; }
     int one = 1;
@@ -808,6 +885,7 @@ static void stop_discovery(void)
 
 static void start_discovery(void)
 {
+    TRACE("discovery: broadcasting");
     udp = socket(AF_INET, SOCK_DGRAM, 0);
     if (udp < 0) { retry_at = plat_ms() + 2000; return; }
     int one = 1;
@@ -870,6 +948,7 @@ static void poll_discovery(uint32_t now)
         stop_discovery();
         st = ST_DOWN;
         snprintf(off_reason, sizeof off_reason, "no computer answered discovery");
+        TRACE("discovery: no answer");
         if (cfg_addr) { cur_addr = cfg_addr; cur_port = port; discovered = 0; connect_fails = 0; }
         retry_at = now + 2000;
     }
@@ -981,6 +1060,17 @@ int dsidbg_init(const dsidbg_config *in)
 
     if (!key_len) {
         snprintf(off_reason, sizeof off_reason, "no key: see %s", cfg.config_path);
+        return -1;
+    }
+    unsigned kib = cfg.tx_queue_kib ? cfg.tx_queue_kib : TXQ_DEFAULT_KIB;
+    for (txq_size = 4096; txq_size < kib * 1024u && txq_size < (1u << 24);) txq_size <<= 1;
+    txq = malloc(txq_size);
+    rxbuf = dma_alloc(RX_CAP);
+    if (!txq || !rxbuf) {
+        free(txq);
+        free(rxbuf);
+        txq = rxbuf = NULL;
+        snprintf(off_reason, sizeof off_reason, "out of memory");
         return -1;
     }
     // host= may be empty or "auto": then the agent finds the computer by discovery.

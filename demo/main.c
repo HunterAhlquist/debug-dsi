@@ -70,8 +70,10 @@ int main(int argc, char **argv)
     cfg.build_id = DSIDBG_VERSION;
     cfg.capture_bank = 3; // bank D is free
     cfg.command = command;
+    // Trace the agent's own steps on this console too: after a freeze, the last line shows where it stopped.
+    cfg.flags = DSIDBG_TRACE | DSIDBG_ECHO_LOG;
     if (dsidbg_init(&cfg) != 0) printf("agent off: %s\n", dsidbg_status());
-    dsidbg_capture_stdout(1); // printf goes to the daemon and to this console
+    dsidbg_capture_stdout(0); // printf goes to the daemon (and, with DSIDBG_ECHO_LOG, to this console)
     printf("dsidbg demo %s\n", DSIDBG_VERSION);
 
     uint32_t frame = 0, last_held = 0;

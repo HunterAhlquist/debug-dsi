@@ -294,12 +294,16 @@ class Daemon:
             self.lock.notify_all()
 
     # -- device listener ---------------------------------------------------------------------------------------
-    def serve_devices(self):
+    def listen_devices(self):
+        """Binds the device port. Raises OSError if another daemon already has it."""
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         srv.bind((self.bind, self.port))
         srv.listen(4)
         self.note("listening for devices on %s:%d" % (self.bind, self.port))
+        return srv
+
+    def serve_devices(self, srv):
         while not self.stopping:
             sock, addr = srv.accept()
             threading.Thread(target=self.accept_device, args=(sock, addr), daemon=True).start()
@@ -413,7 +417,14 @@ class Daemon:
                 time.sleep(0.5)
 
     def run(self):
-        threading.Thread(target=self.serve_devices, daemon=True).start()
+        # Take the device port first: if another daemon has it (two started at once), leave without touching the
+        # control socket, which the CLI would otherwise reach while the DSi talks to the other daemon.
+        try:
+            srv = self.listen_devices()
+        except OSError as e:
+            self.note("not starting: port %d is taken (%s); another daemon is probably running" % (self.port, e))
+            raise SystemExit("dsidbg: port %d is taken; another daemon is probably running" % self.port)
+        threading.Thread(target=self.serve_devices, args=(srv,), daemon=True).start()
         threading.Thread(target=self.serve_discovery, daemon=True).start()
         threading.Thread(target=self.check_silence, daemon=True).start()
         self.serve_control()

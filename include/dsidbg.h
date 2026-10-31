@@ -41,6 +41,8 @@ extern "C" {
 // dsidbg_config.flags
 #define DSIDBG_NO_CRASH_HANDLER (1u << 0) // keep the app's own exception handler
 #define DSIDBG_NO_IRQ_HOOK      (1u << 1) // no profiler, no hang watchdog
+#define DSIDBG_TRACE            (1u << 2) // log the agent's own connection and transfer steps
+#define DSIDBG_ECHO_LOG         (1u << 3) // also print every log line on the libnds console
 
 typedef struct dsidbg_config {
     const char *app_name;    // shown by the daemon; default "app"
@@ -62,6 +64,10 @@ typedef struct dsidbg_config {
     unsigned watchdog_seconds;
 
     unsigned flags;
+
+    // Send queue size in KiB for logs, status and data (0 = 16). Allocated by dsidbg_init() along with a 12 KiB
+    // receive buffer; messages that don't fit while the network is slow are dropped (counted as log_drops).
+    unsigned tx_queue_kib;
 
     // Optional: fill a 256x192 RGB555 image of `screen`. Return 0 on success. Called before the display capture
     // for the top screen, and is the only way to capture the bottom screen.

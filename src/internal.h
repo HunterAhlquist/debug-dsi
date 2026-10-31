@@ -11,7 +11,7 @@
 
 #define PROTO_VERSION 1
 #define PROTO_HEADER  8           // u32 payload length, u16 type, u16 seq (little-endian)
-#define PROTO_MAX_RX  (20 * 1024) // largest message the device accepts
+#define PROTO_MAX_RX  (12 * 1024) // largest message the device accepts (the host sends files in 8 KiB)
 
 enum {
     // Handshake

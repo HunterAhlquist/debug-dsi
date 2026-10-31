@@ -203,9 +203,20 @@ Things to know:
     nothing the frame needs (capture writes 96 KiB into it).
   - A `screenshot` hook in the config can provide the image instead, and is the only way to capture the bottom
     screen.
-- **Resources:** the IP stack allocates about 128 KiB plus buffers; the agent uses about 120 KiB of buffers plus a
-  96 KiB screenshot buffer while one is taken. dswifi uses ARM9 timer 3. The agent itself uses no timers: the
-  profiler samples on dswifi's 1 kHz timer interrupt.
+- **Resources** (measured on a DSi XL with the demo connected):
+  - About 14 KiB of code and 13 KiB of static memory; 8 KiB of that is a stack reserved for crash reports.
+  - `dsidbg_init()` allocates a 16 KiB send queue (`tx_queue_kib`) and a 12 KiB receive buffer. The heap in use
+    with the agent and dswifi running is about 80-90 KiB (`dsidbg status` shows it).
+  - Uploads and the profiler borrow 32 KiB and 16 KiB while they run. Screenshots borrow 96 KiB.
+  - CPU: about 1% of the ARM9 while connected and idle.
+  - An app that never calls `dsidbg_init()` pays only the static part.
+  - dswifi uses ARM9 timer 3. The agent itself uses no timers: the profiler samples on dswifi's 1 kHz timer
+    interrupt.
+- **Blocking commands:** screenshots (about 0.2 s), file transfers and the profiler's final flush run inside
+  `dsidbg_frame()`, so the app pauses for them. Everything else is queued and sent without blocking.
+- **Tracing:** `DSIDBG_TRACE` logs the agent's own connection and transfer steps, and `DSIDBG_ECHO_LOG` also prints
+  every log line on the libnds console. If a freeze stops the network, the last line on screen shows where the
+  agent was.
 - **IRQ hook:** the agent installs a small hook in front of libnds' interrupt dispatcher. It records the
   interrupted address (profiler, watchdog) and counts VBlanks. `DSIDBG_NO_IRQ_HOOK` turns it off, and the
   profiler and watchdog with it. `DSIDBG_NO_CRASH_HANDLER` keeps your own exception handler.

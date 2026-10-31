@@ -9,7 +9,7 @@ VERSION = 1
 HEADER = struct.Struct("<IHH")  # payload length, type, seq
 MAX_PAYLOAD = 16 * 1024 * 1024
 DEFAULT_PORT = int(os.environ.get("DSIDBG_PORT", "7710"))  # the daemon's TCP port
-PUT_CHUNK = 16 * 1024  # the device accepts messages up to 20 KiB
+PUT_CHUNK = 8 * 1024  # the device accepts messages up to 12 KiB
 
 HELLO, CHALLENGE, PROOF = 0x0001, 0x0002, 0x0003
 

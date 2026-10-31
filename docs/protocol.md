@@ -13,7 +13,7 @@ Every message is an 8-byte little-endian header followed by the payload:
 | 4 | u16 | message type |
 | 6 | u16 | seq: set by the host on commands, echoed on their replies; 0 on unsolicited messages |
 
-The device accepts payloads up to 20 KiB, so the host sends files in 16 KiB chunks.
+The device accepts payloads up to 12 KiB, so the host sends files in 8 KiB chunks.
 
 ## Discovery (UDP)
 
