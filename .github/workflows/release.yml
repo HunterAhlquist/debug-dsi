@@ -1,0 +1,124 @@
+# Builds the DSi files and the dsidbg app for macOS, Windows and Linux. A pushed tag vX.Y.Z (matching
+# DSIDBG_VERSION) also publishes them as a GitHub release; a manual run only keeps them as workflow artifacts.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nds:
+    name: DSi loader, demo and library
+    runs-on: ubuntu-latest
+    container: skylyrac/blocksds:slim-v1.24.0
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build
+        run: |
+          export PATH=/opt/wonderful/toolchain/gcc-arm-none-eabi/bin:$PATH
+          make nds -j4
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nds
+          if-no-files-found: error
+          path: |
+            build/dsidbg-loader.nds
+            build/dsidbg-demo.nds
+            build/nds/libdsidbg.a
+            build/nds/dsidbg-loader.elf
+            build/nds/dsidbg-demo.elf
+            include/dsidbg.h
+
+  test:
+    name: Tests (simulator, daemon, MCP, installer)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Tag matches the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          lib=$(sed -n 's/^#define DSIDBG_VERSION "\(.*\)"/\1/p' include/dsidbg.h)
+          py=$(sed -n 's/^DSIDBG_VERSION = "\([^"]*\)".*/\1/p' host/dsidbg/__init__.py)
+          if [ "$tag" != "$lib" ] || [ "$tag" != "$py" ]; then
+            echo "::error::tag $GITHUB_REF_NAME doesn't match DSIDBG_VERSION (include/dsidbg.h: $lib, host: $py)"
+            exit 1
+          fi
+      - run: make test
+
+  app:
+    name: App (${{ matrix.platform }})
+    needs: nds
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: macos
+          - os: windows-latest
+            platform: windows
+          - os: ubuntu-22.04 # older glibc: runs on more distributions
+            platform: linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v8
+        with:
+          name: nds
+          path: .
+      - name: Install PyInstaller, pystray and Pillow
+        run: python -m pip install pyinstaller pystray pillow
+      - name: Build the app (bundles the loader)
+        run: python -m PyInstaller --noconfirm --distpath dist --workpath build/pyinstaller packaging/dsidbg.spec
+      - name: Package
+        run: python packaging/package.py ${{ matrix.platform }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: app-${{ matrix.platform }}
+          if-no-files-found: error
+          path: |
+            dist/dsidbg-${{ matrix.platform }}.zip
+            dist/dsidbg-${{ matrix.platform }}.tar.gz
+
+  release:
+    name: GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [nds, test, app]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: app-*
+          merge-multiple: true
+          path: release
+      - uses: actions/download-artifact@v8
+        with:
+          name: nds
+          path: nds
+      - name: Bundle the DSi files
+        run: |
+          mkdir -p dsidbg-nds/include
+          cp nds/build/dsidbg-loader.nds nds/build/dsidbg-demo.nds nds/build/nds/libdsidbg.a dsidbg-nds/
+          cp nds/build/nds/dsidbg-loader.elf nds/build/nds/dsidbg-demo.elf dsidbg-nds/
+          cp nds/include/dsidbg.h dsidbg-nds/include/
+          zip -r release/dsidbg-nds.zip dsidbg-nds
+          cp nds/build/dsidbg-loader.nds release/
+          ls -l release
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: release/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true

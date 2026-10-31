@@ -9,11 +9,36 @@ import subprocess
 import sys
 import time
 
-from . import proto
+from . import FROZEN, control_socket, proto
 
 START = time.time()
 HOST_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO_DIR = os.path.dirname(HOST_DIR)
+
+
+def self_command(*args):
+    """Command line that runs this dsidbg with `args`: the packaged app's executable, or `python -m dsidbg`."""
+    return [sys.executable] + list(args) if FROZEN else [sys.executable, "-m", "dsidbg"] + list(args)
+
+
+def self_env():
+    if FROZEN:
+        return dict(os.environ)
+    return dict(os.environ, PYTHONPATH=HOST_DIR + os.pathsep + os.environ.get("PYTHONPATH", ""))
+
+
+def bundled_loader():
+    """The loader .nds: bundled in the packaged app, or built in this repo."""
+    if FROZEN:
+        return os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)), "dsidbg-loader.nds")
+    return os.path.join(REPO_DIR, "build", "dsidbg-loader.nds")
+
+
+def terminal_location():
+    """(directory, directory to put on PATH) for a terminal where `dsidbg` works."""
+    if FROZEN:
+        return os.path.expanduser("~"), os.path.dirname(sys.executable)
+    return REPO_DIR, os.path.join(REPO_DIR, "bin")
 
 
 def home_dir():
@@ -26,7 +51,7 @@ class CliError(Exception):
 
 def call(req, on_line=None):
     """Sends one request to the daemon. Streamed lines go to on_line; returns the final reply."""
-    path = os.path.join(home_dir(), "ctl.sock")
+    path = control_socket(home_dir())
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         s.connect(path)
@@ -72,6 +97,13 @@ def sd_path(p):
 _daemon_proc = None
 
 
+def detached():
+    """Popen arguments for a process that outlives this one, without a console window on Windows."""
+    if sys.platform.startswith("win"):
+        return {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
 def ensure_daemon(port=proto.DEFAULT_PORT, bind="0.0.0.0"):
     """Starts the daemon in the background unless it is running, and replaces a daemon started from older code.
     Returns (status, started). Prints nothing."""
@@ -96,12 +128,11 @@ def ensure_daemon(port=proto.DEFAULT_PORT, bind="0.0.0.0"):
     except CliError:
         pass
     os.makedirs(home_dir(), exist_ok=True)
-    env = dict(os.environ, PYTHONPATH=HOST_DIR + os.pathsep + os.environ.get("PYTHONPATH", ""))
     with open(os.path.join(home_dir(), "daemon.out"), "a") as out:
         global _daemon_proc  # keep the handle: the daemon outlives this call (and usually this process)
-        _daemon_proc = subprocess.Popen([sys.executable, "-m", "dsidbg", "serve", "--foreground", "--port",
-                                         str(port), "--bind", bind], env=env, stdout=out, stderr=out,
-                                        stdin=subprocess.DEVNULL, start_new_session=True)
+        _daemon_proc = subprocess.Popen(self_command("serve", "--foreground", "--port", str(port), "--bind", bind),
+                                        env=self_env(), stdout=out, stderr=out, stdin=subprocess.DEVNULL,
+                                        **detached())
     for _ in range(50):
         time.sleep(0.1)
         try:
@@ -188,7 +219,7 @@ def setup_sd(sd_root=None, host=None, port=proto.DEFAULT_PORT, ssid=None, passwo
         result["config"] = os.path.join(dst, "config.ini")
         with open(result["config"], "w") as f:
             f.write(text)
-        loader = os.path.join(REPO_DIR, "build", "dsidbg-loader.nds")
+        loader = bundled_loader()
         if os.path.exists(loader):
             result["loader"] = os.path.join(dst, "dsidbg-loader.nds")
             shutil.copyfile(loader, result["loader"])
@@ -373,8 +404,11 @@ def has_pystray():
 
 
 def do_tray(a):
-    venv_py = tray_python()
     if a.setup:
+        if FROZEN:
+            print("The packaged app already includes the tray's packages.")
+            return
+        venv_py = tray_python()
         if not os.path.exists(venv_py):
             print("Creating %s" % os.path.dirname(os.path.dirname(venv_py)))
             subprocess.run([sys.executable, "-m", "venv", os.path.dirname(os.path.dirname(venv_py))], check=True)
@@ -382,29 +416,23 @@ def do_tray(a):
         subprocess.run([venv_py, "-m", "pip", "install", "--upgrade", "-q"] + TRAY_PACKAGES, check=True)
         print("Done. Start it with: dsidbg tray")
         return
-    env = dict(os.environ, PYTHONPATH=HOST_DIR + os.pathsep + os.environ.get("PYTHONPATH", ""))
-    if has_pystray():
-        py = sys.executable
-    elif os.path.exists(venv_py):
-        py = venv_py
+    if FROZEN or has_pystray():
+        cmd = self_command("tray", "--foreground")
+    elif os.path.exists(tray_python()):
+        cmd = [tray_python(), "-m", "dsidbg", "tray", "--foreground"]
     else:
         raise CliError("the tray needs pystray: run `dsidbg tray --setup` once")
     if a.foreground:
-        if py != sys.executable:
-            os.execve(py, [py, "-m", "dsidbg", "tray", "--foreground"], env)
+        if cmd[0] != sys.executable:  # switch to the private environment's Python
+            os.execve(cmd[0], cmd, self_env())
         from .tray import main as tray_main
         sys.exit(tray_main())
-    if sys.platform.startswith("win"):
-        pyw = os.path.join(os.path.dirname(py), "pythonw.exe")
-        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-        kwargs = {"creationflags": flags}
-        py = pyw if os.path.exists(pyw) else py
-    else:
-        kwargs = {"start_new_session": True}
+    if sys.platform.startswith("win") and not FROZEN:
+        pyw = os.path.join(os.path.dirname(cmd[0]), "pythonw.exe")
+        cmd[0] = pyw if os.path.exists(pyw) else cmd[0]
     os.makedirs(home_dir(), exist_ok=True)
     with open(os.path.join(home_dir(), "tray.log"), "a") as log:
-        subprocess.Popen([py, "-m", "dsidbg", "tray", "--foreground"], env=env, stdout=log, stderr=log,
-                         stdin=subprocess.DEVNULL, **kwargs)
+        subprocess.Popen(cmd, env=self_env(), stdout=log, stderr=log, stdin=subprocess.DEVNULL, **detached())
     print("dsidbg is running in the %s" % ("menu bar" if sys.platform == "darwin" else "system tray"))
 
 

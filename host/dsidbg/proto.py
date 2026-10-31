@@ -2,12 +2,13 @@
 """Wire protocol shared with the DSi agent. Must match src/internal.h and docs/protocol.md."""
 import hashlib
 import hmac
+import os
 import struct
 
 VERSION = 1
 HEADER = struct.Struct("<IHH")  # payload length, type, seq
 MAX_PAYLOAD = 16 * 1024 * 1024
-DEFAULT_PORT = 7710
+DEFAULT_PORT = int(os.environ.get("DSIDBG_PORT", "7710"))  # the daemon's TCP port
 PUT_CHUNK = 16 * 1024  # the device accepts messages up to 20 KiB
 
 HELLO, CHALLENGE, PROOF = 0x0001, 0x0002, 0x0003

@@ -136,7 +136,7 @@ class Tray:
         native.message("Install MCP", "\n".join(lines), error=any(o == "failed" for _, o, _ in results))
 
     def open_terminal(self):
-        native.open_terminal(cli.REPO_DIR, os.path.join(cli.REPO_DIR, "bin"))
+        native.open_terminal(*cli.terminal_location())
 
     def quit(self, icon, item):
         self.stopping = True

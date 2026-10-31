@@ -30,6 +30,22 @@ It is built with [BlocksDS](https://blocksds.skylyrac.net/) and targets DSi mode
 - **Network:** the DSi connects out to your computer. Both sides prove they know a shared key (HMAC-SHA1
   challenge-response) before any command runs. Traffic is not encrypted: use it on your own network only.
 
+## Downloads
+
+Each [release](../../releases) has:
+
+| File | Contents |
+| --- | --- |
+| `dsidbg-macos.zip` | `dsidbg.app` (menu bar app, CLI, daemon, MCP server; Apple silicon) and the loader |
+| `dsidbg-windows.zip` | `dsidbg\dsidbg.exe` (tray app when opened, CLI from a terminal) and the loader |
+| `dsidbg-linux.tar.gz` | `dsidbg/dsidbg` (tray app when run without arguments, CLI otherwise) and the loader |
+| `dsidbg-loader.nds` | the loader on its own |
+| `dsidbg-nds.zip` | loader, demo, `libdsidbg.a`, `dsidbg.h` and ELFs, for adding the agent to your own app |
+
+The apps include Python and the tray's packages, and "Set Up SD Card..." copies their bundled loader. They aren't
+signed: on macOS, right-click the app and choose Open the first time; on Windows, choose More info > Run anyway.
+Move `dsidbg.app` to Applications before using "Install MCP", since the MCP configuration points at the app.
+
 ## Setup
 
 Requirements: a DSi with Unlaunch and an SD card, Docker (for the BlocksDS toolchain), Python 3.
@@ -207,6 +223,21 @@ sim/                 simulator: the agent on the host, for tests
 host/dsidbg/         daemon, command line, MCP server, installer and tray app (Python 3; the tray also uses pystray)
 tests/               end-to-end tests (make test)
 docs/protocol.md     wire protocol
+```
+
+## Releases
+
+`.github/workflows/release.yml` builds the DSi files in the BlocksDS container, runs the tests, and packages the app
+on macOS, Windows and Linux with PyInstaller (`packaging/dsidbg.spec`, `packaging/package.py`). Pushing a tag
+`vX.Y.Z` that matches `DSIDBG_VERSION` (in `include/dsidbg.h` and `host/dsidbg/__init__.py`) publishes a release; a
+manual run keeps the files as workflow artifacts.
+
+To build the app locally (after `tools/docker.sh make nds`):
+
+```bash
+python3 -m pip install pyinstaller pystray pillow
+python3 -m PyInstaller --noconfirm --distpath dist --workpath build/pyinstaller packaging/dsidbg.spec
+python3 packaging/package.py macos
 ```
 
 ## Development

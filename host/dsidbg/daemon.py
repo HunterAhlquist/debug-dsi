@@ -3,7 +3,7 @@
 
 Files under the home directory (DSIDBG_HOME, default ~/.dsidbg):
   key           shared secret (also in the DSi's sd:/dsidbg/config.ini)
-  ctl.sock      control socket for the CLI
+  ctl.sock      control socket for the CLI (in /tmp when this path is too long for a socket)
   daemon.log    the daemon's own messages
   logs/         device logs, one file per connection
   crashes/      crash reports (.json, and .txt when an ELF is known)
@@ -21,7 +21,7 @@ import threading
 import time
 import zlib
 
-from . import code_id, proto
+from . import code_id, control_socket, proto
 from .png import rgb555_to_png
 from .symbols import Symbols, format_crash
 
@@ -326,7 +326,7 @@ class Daemon:
 
     # -- control socket ----------------------------------------------------------------------------------------
     def serve_control(self):
-        path = os.path.join(self.home, "ctl.sock")
+        path = control_socket(self.home)
         if os.path.exists(path):
             os.unlink(path)
         srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

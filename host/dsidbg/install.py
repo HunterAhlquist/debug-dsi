@@ -11,14 +11,21 @@ import shutil
 import subprocess
 import sys
 
+from . import FROZEN
 from .cli import REPO_DIR, CliError
 
 TARGETS = ("claude-code", "codex", "claude-desktop")
 
 
 def server_command():
-    """The command a harness runs to start the server: the repo's bin/dsidbg wrapper (needs only python3)."""
-    return [os.path.join(REPO_DIR, "bin", "dsidbg"), "mcp"]
+    """The command a harness runs to start the server: the packaged app's executable, or this repo's wrapper."""
+    if FROZEN:
+        if "/AppTranslocation/" in sys.executable:
+            # macOS runs a downloaded app from a temporary copy until it is moved; that path won't last.
+            raise CliError("move dsidbg.app to the Applications folder and open it from there first")
+        return [sys.executable, "mcp"]
+    wrapper = "dsidbg.cmd" if sys.platform.startswith("win") else "dsidbg"
+    return [os.path.join(REPO_DIR, "bin", wrapper), "mcp"]
 
 
 def server_env():
@@ -185,6 +192,10 @@ def install_all(skip_existing=True, remove=False, name="dsidbg", scope="user", d
     """Installs into every harness found. -> list of (harness label, outcome, message); outcome is one of
     installed, already, removed, skipped (not found), failed."""
     found = detect()
+    try:
+        server_command()
+    except CliError as e:
+        return [(LABELS[t], "failed", str(e)) for t in TARGETS]
     inst = Installer(name, scope, dry_run, out=out, skip_existing=skip_existing)
     results = []
     for t in TARGETS:
