@@ -21,6 +21,11 @@ SIM = os.path.join(ROOT, "build", "dsidbg-sim")
 DSIDBG = os.path.join(ROOT, "bin", "dsidbg")
 
 
+def read(path):
+    with open(path) as f:
+        return f.read()
+
+
 def free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -275,7 +280,7 @@ class EndToEnd(unittest.TestCase):
             deadline, text = time.time() + 3, ""
             while time.time() < deadline and "sim started" not in text:
                 time.sleep(0.1)
-                text = "".join(open(os.path.join(logs, n)).read() for n in os.listdir(logs) if n.endswith("-early.log"))
+                text = "".join(read(os.path.join(logs, n)) for n in os.listdir(logs) if n.endswith("-early.log"))
             self.assertIn("sim started", text)
         finally:
             sim.kill()
@@ -305,6 +310,177 @@ class EndToEnd(unittest.TestCase):
             time.sleep(0.3)
             st = cli.call({"cmd": "status"})
         self.assertGreater(float(st["status"]["fps"]), 20)
+
+
+class McpClient:
+    """Minimal MCP client over the server's stdio."""
+
+    def __init__(self, env):
+        self.proc = subprocess.Popen([DSIDBG, "mcp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, text=True, env=env)
+        self.next_id = 0
+
+    def request(self, method, params=None):
+        self.next_id += 1
+        self.proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": self.next_id, "method": method,
+                                          "params": params or {}}) + "\n")
+        self.proc.stdin.flush()
+        msg = json.loads(self.proc.stdout.readline())
+        assert msg["id"] == self.next_id, msg
+        return msg
+
+    def tool(self, name, **args):
+        r = self.request("tools/call", {"name": name, "arguments": args})["result"]
+        texts = "".join(c.get("text", "") for c in r["content"] if c["type"] == "text")
+        return r, texts
+
+    def close(self):
+        self.proc.stdin.close()
+        self.proc.wait(5)
+        self.proc.stdout.close()
+        self.proc.stderr.close()
+
+
+class EndToEndMcp(EndToEnd):
+    """The MCP server against the simulator (reuses EndToEnd's daemon setup; only these tests run here)."""
+
+    def setUp(self):
+        if not self.sim or self.sim.poll() is not None:
+            self.start_sim()
+        self.mcp = McpClient(dict(os.environ, DSIDBG_HOME=self.home))
+
+    def tearDown(self):
+        self.mcp.close()
+
+    def test_mcp_session(self):
+        init = self.mcp.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                                               "clientInfo": {"name": "test", "version": "0"}})["result"]
+        self.assertEqual(init["protocolVersion"], "2025-06-18")
+        self.assertIn("sd:/", init["instructions"])
+        names = {t["name"] for t in self.mcp.request("tools/list")["result"]["tools"]}
+        self.assertTrue({"status", "press", "screenshot", "read_log", "push_file", "last_crash"} <= names)
+
+        r, t = self.mcp.tool("status")
+        self.assertIn("sim sim-build", t)
+        self.mcp.tool("read_log")  # consume the backlog
+        r, t = self.mcp.tool("press", presses=["A+B+3"])
+        self.assertFalse(r.get("isError"), t)
+        deadline = time.time() + 3
+        seen = ""
+        while "held=0x3" not in seen and time.time() < deadline:
+            seen += self.mcp.tool("read_log")[1]
+        self.assertIn("keys held=0x3", seen)
+        r, t = self.mcp.tool("screenshot")
+        img = next(c for c in r["content"] if c["type"] == "image")
+        import base64
+        self.assertEqual(img["mimeType"], "image/png")
+        self.assertEqual(base64.b64decode(img["data"])[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(self.mcp.tool("app_command", text="echo via mcp")[1], "via mcp")
+        r, t = self.mcp.tool("list_files", sd_path="nand:/")
+        self.assertTrue(r["isError"])
+        self.assertIn("sd:/", t)
+        r, t = self.mcp.tool("profile", seconds=0.5)
+        self.assertIn("samples at 1000 Hz", t)
+
+        # A crashing command fails at once and the report is available.
+        r, t = self.mcp.tool("app_command", text="crash")
+        self.assertTrue(r["isError"])
+        self.assertIn("the device crashed: data abort", t)
+        r, t = self.mcp.tool("last_crash", only_new=True, wait_seconds=5)
+        self.assertIn("data abort", t)
+        self.assertIn("02001234", t)
+        r, t = self.mcp.tool("last_crash", only_new=True)
+        self.assertTrue(r["isError"])
+        self.stop_sim()
+
+    def test_mcp_errors(self):
+        r = self.mcp.request("tools/call", {"name": "nope", "arguments": {}})["result"]
+        self.assertTrue(r["isError"])
+        self.assertIn("error", self.mcp.request("no/such/method"))
+        r, t = self.mcp.tool("press", presses=["BOGUS"])
+        self.assertTrue(r["isError"])
+        self.assertIn("unknown button", t)
+
+
+# Run only the MCP tests in this subclass, not EndToEnd's again.
+for _name in [n for n in dir(EndToEnd) if n.startswith("test_")]:
+    setattr(EndToEndMcp, _name, None)
+
+
+class Install(unittest.TestCase):
+    """mcp-install with fake claude/codex commands and a throwaway home directory."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="ddi")
+        self.bin = os.path.join(self.tmp, "bin")
+        os.makedirs(self.bin)
+        self.calls = os.path.join(self.tmp, "calls.txt")
+        for tool in ("claude", "codex"):
+            path = os.path.join(self.bin, tool)
+            with open(path, "w") as f:
+                # `mcp get` succeeds only once `mcp add` has been called; every call is logged.
+                f.write('#!/bin/sh\necho "%s $*" >> %s\n' % (tool, self.calls) +
+                        'case "$2" in get) [ -f %s/%s.added ] && exit 0; exit 1;; '
+                        'add) touch %s/%s.added;; remove) rm -f %s/%s.added;; esac\nexit 0\n'
+                        % (self.tmp, tool, self.tmp, tool, self.tmp, tool))
+            os.chmod(path, 0o755)
+        if sys.platform == "darwin":
+            self.desktop = os.path.join(self.tmp, "Library", "Application Support", "Claude",
+                                        "claude_desktop_config.json")
+        else:
+            self.desktop = os.path.join(self.tmp, ".config", "Claude", "claude_desktop_config.json")
+        os.makedirs(os.path.dirname(self.desktop))
+        with open(self.desktop, "w") as f:
+            json.dump({"preferences": {"keep": True}, "mcpServers": {"other": {"command": "x"}}}, f)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_install(self, *args):
+        env = dict(os.environ, HOME=self.tmp, PATH=self.bin + ":/usr/bin:/bin")
+        env.pop("DSIDBG_HOME", None)
+        r = subprocess.run([DSIDBG, "mcp-install"] + list(args), capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r.stdout
+
+    def test_install_and_remove(self):
+        server = os.path.join(ROOT, "bin", "dsidbg")
+        out = self.run_install()
+        self.assertIn("added to Claude Code", out)
+        self.assertIn("added to Codex", out)
+        self.assertIn("added to Claude Desktop", out)
+        with open(self.calls) as f:
+            calls = f.read().splitlines()
+        self.assertIn("claude mcp add -s user dsidbg -- %s mcp" % server, calls)
+        self.assertIn("codex mcp add dsidbg -- %s mcp" % server, calls)
+        with open(self.desktop) as f:
+            cfg = json.load(f)
+        self.assertEqual(cfg["preferences"], {"keep": True})
+        self.assertEqual(cfg["mcpServers"]["other"], {"command": "x"})
+        self.assertEqual(cfg["mcpServers"]["dsidbg"], {"command": server, "args": ["mcp"]})
+        self.assertTrue(os.path.exists(self.desktop + ".bak"))
+
+        # Installing again replaces the entries instead of failing on duplicates.
+        self.run_install()
+        with open(self.calls) as f:
+            calls = f.read().splitlines()
+        self.assertIn("claude mcp remove -s user dsidbg", calls)
+        self.assertIn("codex mcp remove dsidbg", calls)
+
+        self.run_install("--remove")
+        with open(self.desktop) as f:
+            cfg = json.load(f)
+        self.assertNotIn("dsidbg", cfg["mcpServers"])
+        self.assertIn("other", cfg["mcpServers"])
+
+    def test_dry_run_changes_nothing(self):
+        with open(self.desktop) as f:
+            before = f.read()
+        out = self.run_install("--dry-run")
+        self.assertIn("(dry run)", out)
+        with open(self.desktop) as f:
+            self.assertEqual(f.read(), before)
+        self.assertFalse(os.path.exists(self.calls) and " add " in read(self.calls))
 
 
 class Symbolization(unittest.TestCase):

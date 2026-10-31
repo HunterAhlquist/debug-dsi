@@ -540,23 +540,28 @@ class Daemon:
         return out
 
     def cmd_log(self, req, reply):
-        """Streams log text: the last `lines` entries, then (with follow) new ones as they arrive."""
+        """Streams log text with its index. `since` (an index) returns only newer entries; otherwise the last `lines`
+        entries. With `follow`, keeps streaming new ones. The final reply carries `last`, the newest index."""
         with self.lock:
-            backlog = list(self.logs)[-req.get("lines", 100):] if req.get("lines", 100) else []
+            entries = list(self.logs)
             last = self.log_index
-        for _, _, text in backlog:
-            reply({"text": text})
+        if req.get("since") is not None:
+            backlog = [e for e in entries if e[0] > req["since"]][-req.get("lines", 1000):]
+        else:
+            backlog = entries[-req.get("lines", 100):] if req.get("lines", 100) else []
+        for idx, _, text in backlog:
+            reply({"text": text, "index": idx})
         if not req.get("follow"):
-            return {"done": True}
+            return {"done": True, "last": last}
         deadline = time.time() + req["follow_seconds"] if req.get("follow_seconds") else None
         while not deadline or time.time() < deadline:
             with self.lock:
                 self.lock.wait(0.5)
                 new = [e for e in self.logs if e[0] > last]
             for idx, _, text in new:
-                reply({"text": text})
+                reply({"text": text, "index": idx})
                 last = idx
-        return {"done": True}
+        return {"done": True, "last": last}
 
     def cmd_crash(self, req, reply):
         """The last crash; with `after` (a time), only crashes reported since then. `wait` waits for one."""

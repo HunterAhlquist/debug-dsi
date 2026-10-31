@@ -68,32 +68,37 @@ def sd_path(p):
 
 # -- commands ---------------------------------------------------------------------------------------------------
 
-def do_serve(a):
-    from .daemon import Daemon
-    if a.foreground:
-        Daemon(home_dir(), a.port, a.bind).run()
-        return
+def ensure_daemon(port=proto.DEFAULT_PORT, bind="0.0.0.0"):
+    """Starts the daemon in the background unless it is running. Returns (status, started). Prints nothing."""
     try:
-        call({"cmd": "status"})
-        print("the daemon is already running")
-        return
+        return call({"cmd": "status"}), False
     except CliError:
         pass
     os.makedirs(home_dir(), exist_ok=True)
     env = dict(os.environ, PYTHONPATH=HOST_DIR + os.pathsep + os.environ.get("PYTHONPATH", ""))
     with open(os.path.join(home_dir(), "daemon.out"), "a") as out:
-        subprocess.Popen([sys.executable, "-m", "dsidbg", "serve", "--foreground", "--port", str(a.port),
-                          "--bind", a.bind], env=env, stdout=out, stderr=out, stdin=subprocess.DEVNULL,
+        subprocess.Popen([sys.executable, "-m", "dsidbg", "serve", "--foreground", "--port", str(port),
+                          "--bind", bind], env=env, stdout=out, stderr=out, stdin=subprocess.DEVNULL,
                          start_new_session=True)
     for _ in range(50):
         time.sleep(0.1)
         try:
-            st = call({"cmd": "status"})
-            print("daemon listening on port %d (home %s)" % (st["port"], st["home"]))
-            return
+            return call({"cmd": "status"}), True
         except CliError:
             pass
     raise CliError("the daemon didn't start; see %s" % os.path.join(home_dir(), "daemon.out"))
+
+
+def do_serve(a):
+    from .daemon import Daemon
+    if a.foreground:
+        Daemon(home_dir(), a.port, a.bind).run()
+        return
+    st, started = ensure_daemon(a.port, a.bind)
+    if started:
+        print("daemon listening on port %d (home %s)" % (st["port"], st["home"]))
+    else:
+        print("the daemon is already running")
 
 
 def do_stop(a):
@@ -284,6 +289,16 @@ def do_data(a):
         print("%s  %s" % (time.strftime("%H:%M:%S", time.localtime(item["time"])), item["hex"]))
 
 
+def do_mcp(a):
+    from .mcp import main as mcp_main
+    mcp_main()
+
+
+def do_mcp_install(a):
+    from .install import do_mcp_install as run
+    run(a)
+
+
 def do_elf(a):
     r = call({"cmd": "elf", "app": a.app, "path": os.path.abspath(a.path) if a.path else None})
     for app, path in sorted(r["elves"].items()):
@@ -383,6 +398,17 @@ def main(argv=None):
     sp = cmd("elf", do_elf, "remember an app's ELF for symbolization (no PATH: list)", timeout=False)
     sp.add_argument("app", nargs="?")
     sp.add_argument("path", nargs="?")
+
+    cmd("mcp", do_mcp, "run the MCP server on stdio (started by LLM harnesses)", timeout=False)
+    sp = cmd("mcp-install", do_mcp_install, "register the MCP server with Claude Code, Codex and Claude Desktop",
+             timeout=False)
+    sp.add_argument("--target", choices=["all", "claude-code", "codex", "claude-desktop"], default="all",
+                    help="harness to configure (default: every one found)")
+    sp.add_argument("--scope", choices=["user", "project", "local"], default="user",
+                    help="Claude Code scope (default: user, i.e. all projects)")
+    sp.add_argument("--name", default="dsidbg", help="server name in the harness")
+    sp.add_argument("--remove", action="store_true", help="unregister instead")
+    sp.add_argument("--dry-run", action="store_true", help="show what would change")
 
     a = p.parse_args(argv)
     try:

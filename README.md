@@ -98,6 +98,30 @@ matter:
 | `watchdog SECONDS` | change the hang watchdog (0 = off) |
 | `elf APP PATH` | remember an app's ELF so crashes and profiles are symbolized automatically |
 
+## MCP tools for LLM agents
+
+`bin/dsidbg mcp` is an MCP server (stdio, Python standard library only) that gives an LLM agent the same control as
+the command line, as tools: `status`, `wait_for_device`, `press`, `touch`, `release_input`, `screenshot` (returned
+as an image), `read_log` (only new lines by default), `push_file` (optionally launching it), `launch`, `reboot`,
+`list_files`, `get_file`, `delete_file`, `app_command`, `profile`, `last_crash`, `set_watchdog` and `read_data`. It
+starts the daemon if it isn't running, and refuses device paths outside `sd:/` like the CLI does.
+
+Register it with the harnesses on this computer:
+
+```bash
+bin/dsidbg mcp-install
+```
+
+| Harness | How |
+| --- | --- |
+| Claude Code (CLI, and the desktop app's Code tab) | `claude mcp add -s user dsidbg -- <repo>/bin/dsidbg mcp` |
+| Codex (CLI, IDE extension and desktop app share `~/.codex/config.toml`) | `codex mcp add dsidbg -- <repo>/bin/dsidbg mcp` |
+| Claude Desktop (chat) | adds `mcpServers.dsidbg` to `claude_desktop_config.json`, keeping a `.bak` copy |
+
+Options: `--target claude-code|codex|claude-desktop` (default: every one found), `--scope user|project|local`
+(Claude Code), `--remove`, `--dry-run`. Running sessions need a restart to see the tools; Claude Desktop needs to be
+quit and reopened. Other MCP clients can run `<repo>/bin/dsidbg mcp` as a stdio server.
+
 ## Using the library in your app
 
 Link `build/nds/libdsidbg.a` with dswifi, use an ARM7 core with Wi-Fi (`arm7_dswifi.elf` or
@@ -159,7 +183,7 @@ src/platform_host.c  host platform for the simulator
 loader/              recovery/updater app (boot target after reboots)
 demo/                demo app exercising every feature
 sim/                 simulator: the agent on the host, for tests
-host/dsidbg/         daemon and command line (Python 3, standard library only)
+host/dsidbg/         daemon, command line, MCP server and installer (Python 3, standard library only)
 tests/               end-to-end tests (make test)
 docs/protocol.md     wire protocol
 ```
