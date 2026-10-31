@@ -31,6 +31,7 @@ def call(req, on_line=None):
     try:
         s.connect(path)
     except OSError:
+        s.close()
         raise CliError("the daemon is not running (start it with `dsidbg serve`)")
     f = s.makefile("rwb")
     f.write((json.dumps(req) + "\n").encode())
@@ -68,24 +69,52 @@ def sd_path(p):
 
 # -- commands ---------------------------------------------------------------------------------------------------
 
+_daemon_proc = None
+
+
 def ensure_daemon(port=proto.DEFAULT_PORT, bind="0.0.0.0"):
-    """Starts the daemon in the background unless it is running. Returns (status, started). Prints nothing."""
+    """Starts the daemon in the background unless it is running, and replaces a daemon started from older code.
+    Returns (status, started). Prints nothing."""
+    from . import code_id
+    had_device = False
     try:
-        return call({"cmd": "status"}), False
+        st = call({"cmd": "status"})
+        if st.get("code_id") == code_id():
+            return st, False
+        # Started before the code was updated: replace it, keeping its port. The DSi reconnects by itself.
+        had_device, port, bind = st.get("connected"), st.get("port", port), st.get("bind", bind)
+        try:
+            call({"cmd": "shutdown"})
+        except CliError:
+            pass
+        for _ in range(30):
+            time.sleep(0.1)
+            try:
+                call({"cmd": "status"})
+            except CliError:
+                break
     except CliError:
         pass
     os.makedirs(home_dir(), exist_ok=True)
     env = dict(os.environ, PYTHONPATH=HOST_DIR + os.pathsep + os.environ.get("PYTHONPATH", ""))
     with open(os.path.join(home_dir(), "daemon.out"), "a") as out:
-        subprocess.Popen([sys.executable, "-m", "dsidbg", "serve", "--foreground", "--port", str(port),
-                          "--bind", bind], env=env, stdout=out, stderr=out, stdin=subprocess.DEVNULL,
-                         start_new_session=True)
+        global _daemon_proc  # keep the handle: the daemon outlives this call (and usually this process)
+        _daemon_proc = subprocess.Popen([sys.executable, "-m", "dsidbg", "serve", "--foreground", "--port",
+                                         str(port), "--bind", bind], env=env, stdout=out, stderr=out,
+                                        stdin=subprocess.DEVNULL, start_new_session=True)
     for _ in range(50):
         time.sleep(0.1)
         try:
-            return call({"cmd": "status"}), True
+            st = call({"cmd": "status"})
         except CliError:
-            pass
+            continue
+        if had_device:  # give the device a moment to reconnect, so the caller's command can reach it
+            try:
+                call({"cmd": "wait", "timeout": 10})
+                st = call({"cmd": "status"})
+            except CliError:
+                pass
+        return st, True
     raise CliError("the daemon didn't start; see %s" % os.path.join(home_dir(), "daemon.out"))
 
 

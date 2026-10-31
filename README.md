@@ -104,7 +104,9 @@ matter:
 the command line, as tools: `status`, `wait_for_device`, `press`, `touch`, `release_input`, `screenshot` (returned
 as an image), `read_log` (only new lines by default), `push_file` (optionally launching it), `launch`, `reboot`,
 `list_files`, `get_file`, `delete_file`, `app_command`, `profile`, `last_crash`, `set_watchdog` and `read_data`. It
-starts the daemon if it isn't running, and refuses device paths outside `sd:/` like the CLI does.
+starts the daemon if it isn't running, and refuses device paths outside `sd:/` like the CLI does. The daemon keeps
+running across updates of this repo; the MCP server and `dsidbg serve` replace one that was started from older code
+(the DSi reconnects by itself).
 
 Register it with the harnesses on this computer:
 

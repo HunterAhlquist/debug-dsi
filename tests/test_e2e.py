@@ -483,6 +483,54 @@ class Install(unittest.TestCase):
         self.assertFalse(os.path.exists(self.calls) and " add " in read(self.calls))
 
 
+class StaleDaemon(unittest.TestCase):
+    """A daemon started from older code is replaced by the current one."""
+
+    def test_replaced(self):
+        tmp = tempfile.mkdtemp(prefix="dds")
+        try:
+            old_pkg = os.path.join(tmp, "old")
+            shutil.copytree(os.path.join(ROOT, "host", "dsidbg"), os.path.join(old_pkg, "dsidbg"),
+                            ignore=shutil.ignore_patterns("__pycache__"))
+            with open(os.path.join(old_pkg, "dsidbg", "proto.py"), "a") as f:
+                f.write("# older version\n")
+            env = dict(os.environ, DSIDBG_HOME=os.path.join(tmp, "h"), PYTHONPATH=old_pkg)
+            port = str(free_port())
+            old = subprocess.Popen([sys.executable, "-m", "dsidbg", "serve", "--foreground", "--port", port,
+                                    "--bind", "127.0.0.1"], env=env, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL)
+            os.environ["DSIDBG_HOME"] = env["DSIDBG_HOME"]
+            try:
+                deadline = time.time() + 5
+                while True:
+                    try:
+                        before = cli.call({"cmd": "status"})
+                        break
+                    except cli.CliError:
+                        if time.time() > deadline:
+                            raise
+                        time.sleep(0.1)
+                from dsidbg import code_id
+                self.assertNotEqual(before["code_id"], code_id())
+                st, started = cli.ensure_daemon()
+                self.assertTrue(started)
+                self.assertEqual(st["code_id"], code_id())
+                self.assertEqual(st["port"], int(port))  # same port as the daemon it replaced
+                self.assertEqual(old.wait(5), 0)
+                self.assertEqual(cli.ensure_daemon()[1], False)  # up to date now: left alone
+            finally:
+                try:
+                    cli.call({"cmd": "shutdown"})
+                except cli.CliError:
+                    pass
+                if old.poll() is None:
+                    old.kill()
+                    old.wait()
+        finally:
+            os.environ.pop("DSIDBG_HOME", None)
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class Symbolization(unittest.TestCase):
     ELF = os.path.join(ROOT, "build", "nds", "dsidbg-demo.elf")
 
