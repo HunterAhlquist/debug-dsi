@@ -98,6 +98,23 @@ matter:
 | `watchdog SECONDS` | change the hang watchdog (0 = off) |
 | `elf APP PATH` | remember an app's ELF so crashes and profiles are symbolized automatically |
 
+## Menu bar / system tray app
+
+`bin/dsidbg tray` runs the daemon behind a menu bar (macOS) or system tray (Windows, Linux) icon. The icon's light
+shows the state: green with a DSi connected, orange waiting for one, red when the daemon isn't running. The menu has:
+
+- **Status:** the connected DSi's address and app, and the daemon's address and port (not clickable).
+- **Set Up SD Card...:** asks for the card's root folder, then writes `dsidbg/config.ini` (this computer's address
+  and key, keeping Wi-Fi settings already on the card) and copies the loader.
+- **Install MCP:** registers the MCP server with Claude Code, Codex and Claude Desktop, and says for each whether it
+  was installed, already installed, or not found.
+- **Open Terminal:** a terminal in this repo with `dsidbg` on the PATH.
+- **Quit:** stops the daemon and the icon.
+
+The tray needs pystray and Pillow (plus PyObjC on macOS). `bin/dsidbg tray --setup` installs them once into a private
+environment, `~/.dsidbg/venv`; the rest of dsidbg keeps using only the standard library. `--foreground` keeps it
+attached to the terminal. With a menu bar manager (Bartender, Ice, ...), the icon may start out hidden behind it.
+
 ## MCP tools for LLM agents
 
 `bin/dsidbg mcp` is an MCP server (stdio, Python standard library only) that gives an LLM agent the same control as
@@ -121,7 +138,9 @@ bin/dsidbg mcp-install
 | Claude Desktop (chat) | adds `mcpServers.dsidbg` to `claude_desktop_config.json`, keeping a `.bak` copy |
 
 Options: `--target claude-code|codex|claude-desktop` (default: every one found), `--scope user|project|local`
-(Claude Code), `--remove`, `--dry-run`. Running sessions need a restart to see the tools; Claude Desktop needs to be
+(Claude Code), `--skip-existing`, `--remove`, `--dry-run`. Claude Desktop rewrites its config from memory, so the
+installer leaves it alone while it is running: quit Claude (the Code tab is part of the same app), then install, for
+example from the tray icon. Running sessions need a restart to see the tools; Claude Desktop needs to be
 quit and reopened. Other MCP clients can run `<repo>/bin/dsidbg mcp` as a stdio server.
 
 ## Using the library in your app
@@ -185,7 +204,7 @@ src/platform_host.c  host platform for the simulator
 loader/              recovery/updater app (boot target after reboots)
 demo/                demo app exercising every feature
 sim/                 simulator: the agent on the host, for tests
-host/dsidbg/         daemon, command line, MCP server and installer (Python 3, standard library only)
+host/dsidbg/         daemon, command line, MCP server, installer and tray app (Python 3; the tray also uses pystray)
 tests/               end-to-end tests (make test)
 docs/protocol.md     wire protocol
 ```

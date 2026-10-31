@@ -436,8 +436,9 @@ class Install(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def run_install(self, *args):
-        env = dict(os.environ, HOME=self.tmp, PATH=self.bin + ":/usr/bin:/bin")
+    def run_install(self, *args, desktop_running="0"):
+        env = dict(os.environ, HOME=self.tmp, PATH=self.bin + ":/usr/bin:/bin",
+                   DSIDBG_CLAUDE_DESKTOP_RUNNING=desktop_running)
         env.pop("DSIDBG_HOME", None)
         r = subprocess.run([DSIDBG, "mcp-install"] + list(args), capture_output=True, text=True, env=env, timeout=30)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -473,6 +474,29 @@ class Install(unittest.TestCase):
         self.assertNotIn("dsidbg", cfg["mcpServers"])
         self.assertIn("other", cfg["mcpServers"])
 
+    def test_install_all_reports_each_harness(self):
+        code = ("import json, sys; from dsidbg import install; "
+                "print(json.dumps(install.install_all(skip_existing=True)))")
+        env = dict(os.environ, HOME=self.tmp, PATH=self.bin + ":/usr/bin:/bin",
+                   PYTHONPATH=os.path.join(ROOT, "host"), DSIDBG_CLAUDE_DESKTOP_RUNNING="0")
+        env.pop("DSIDBG_HOME", None)
+
+        def run():
+            r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            return {label: outcome for label, outcome, _ in json.loads(r.stdout)}
+
+        self.assertEqual(run(), {"Claude Code": "installed", "Codex": "installed", "Claude Desktop": "installed"})
+        self.assertEqual(run(), {"Claude Code": "already", "Codex": "already", "Claude Desktop": "already"})
+        shutil.rmtree(os.path.dirname(self.desktop))  # a harness that isn't there is reported, not an error
+        self.assertEqual(run()["Claude Desktop"], "skipped")
+
+    def test_claude_desktop_left_alone_while_running(self):
+        before = read(self.desktop)
+        out = self.run_install("--target", "claude-desktop", desktop_running="1")
+        self.assertIn("skipped: Claude Desktop is running", out)
+        self.assertEqual(read(self.desktop), before)
+
     def test_dry_run_changes_nothing(self):
         with open(self.desktop) as f:
             before = f.read()
@@ -481,6 +505,47 @@ class Install(unittest.TestCase):
         with open(self.desktop) as f:
             self.assertEqual(f.read(), before)
         self.assertFalse(os.path.exists(self.calls) and " add " in read(self.calls))
+
+
+class SdSetup(unittest.TestCase):
+    def test_config_merge_keeps_wifi(self):
+        existing = "# mine\nhost=1.2.3.4\nport=1\nkey=old\nssid=Home\npass=secret\nextra=1\n"
+        text, kept = cli.config_text("10.0.0.5", 7710, "newkey", existing)
+        self.assertIn("host=10.0.0.5\nport=7710\nkey=newkey\n", text)
+        self.assertIn("ssid=Home\npass=secret\nextra=1\n", text)
+        self.assertNotIn("old", text)
+        self.assertEqual(kept, ["extra", "pass", "ssid"])
+        text, kept = cli.config_text("10.0.0.5", 7710, "k")
+        self.assertIn("# ssid=MyNetwork", text)
+        self.assertEqual(kept, [])
+        text, _ = cli.config_text("h", 1, "k", existing, ssid="Other", password="pw")
+        self.assertIn("ssid=Other\npass=pw", text)
+
+    def test_setup_sd_card(self):
+        tmp = tempfile.mkdtemp(prefix="ddc")
+        old_home = os.environ.get("DSIDBG_HOME")
+        os.environ["DSIDBG_HOME"] = os.path.join(tmp, "home")
+        try:
+            card = os.path.join(tmp, "card")
+            os.makedirs(os.path.join(card, "dsidbg"))
+            with open(os.path.join(card, "dsidbg", "config.ini"), "w") as f:
+                f.write("host=old\nssid=Home\npass=pw\n")
+            r = cli.setup_sd(card, host="192.168.9.9")
+            cfg = read(os.path.join(card, "dsidbg", "config.ini"))
+            self.assertIn("host=192.168.9.9", cfg)
+            self.assertIn("ssid=Home", cfg)
+            self.assertEqual(r["kept"], ["pass", "ssid"])
+            self.assertEqual(read(r["home_copy"]), cfg)
+            loader_built = os.path.exists(os.path.join(ROOT, "build", "dsidbg-loader.nds"))
+            self.assertEqual(bool(r["loader"]), loader_built)
+            with self.assertRaises(cli.CliError):
+                cli.setup_sd(os.path.join(tmp, "missing"))
+        finally:
+            if old_home is None:
+                os.environ.pop("DSIDBG_HOME", None)
+            else:
+                os.environ["DSIDBG_HOME"] = old_home
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 class StaleDaemon(unittest.TestCase):

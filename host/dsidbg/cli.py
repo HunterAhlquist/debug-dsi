@@ -138,34 +138,71 @@ def do_stop(a):
     print("stopped")
 
 
-def do_setup(a):
+WIFI_HINT = ["# Without ssid/pass the DSi uses its saved Wi-Fi connections (System Settings > Internet).",
+             "# ssid=MyNetwork", "# pass=MyPassword"]
+
+
+def config_text(host, port, key, existing="", ssid=None, password=None):
+    """The DSi's config.ini. Settings in `existing` other than host/port/key (Wi-Fi, ...) are kept unless given."""
+    kept = {}
+    for line in existing.splitlines():
+        line = line.strip()
+        if line and not line.startswith(("#", ";")) and "=" in line:
+            k, v = line.split("=", 1)
+            if k.strip() not in ("host", "port", "key"):
+                kept[k.strip()] = v.strip()
+    if ssid is not None:
+        kept["ssid"], kept["pass"] = ssid, password or ""
+    lines = ["# dsidbg agent settings, written by `dsidbg setup`. Lives at sd:/dsidbg/config.ini.",
+             "host=%s" % host, "port=%d" % port, "key=%s" % key]
+    lines += ["%s=%s" % kv for kv in kept.items()] if kept else WIFI_HINT
+    return "\n".join(lines) + "\n", sorted(kept)
+
+
+def setup_sd(sd_root=None, host=None, port=proto.DEFAULT_PORT, ssid=None, password=None):
+    """Writes the agent's config (and the loader, when built) to a mounted SD card; always saves a copy in the
+    daemon's home. Returns a dict describing what was written."""
     from .daemon import load_key
     key = load_key(home_dir())
-    lines = ["# dsidbg agent settings. Copy to sd:/dsidbg/config.ini on the DSi's SD card.",
-             "host=%s" % (a.host or local_ip()), "port=%d" % a.port, "key=%s" % key]
-    if a.ssid:
-        lines += ["ssid=%s" % a.ssid, "pass=%s" % (a.password or "")]
-    else:
-        lines += ["# Without ssid/pass the DSi uses its saved Wi-Fi connections (System Settings > Internet).",
-                  "# ssid=MyNetwork", "# pass=MyPassword"]
-    text = "\n".join(lines) + "\n"
-    path = os.path.join(home_dir(), "config.ini")
-    with open(path, "w") as f:
+    host = host or local_ip()
+    result = {"host": host, "port": port, "config": None, "loader": None, "kept": []}
+    existing = ""
+    if sd_root:
+        if not os.path.isdir(sd_root):
+            raise CliError("%s is not a folder" % sd_root)
+        if not os.access(sd_root, os.W_OK):
+            raise CliError("%s is not writable (is the card locked?)" % sd_root)
+        cfg_path = os.path.join(sd_root, "dsidbg", "config.ini")
+        if os.path.exists(cfg_path):
+            with open(cfg_path) as f:
+                existing = f.read()
+    text, result["kept"] = config_text(host, port, key, existing, ssid, password)
+    home_copy = os.path.join(home_dir(), "config.ini")
+    with open(home_copy, "w") as f:
         f.write(text)
-    os.chmod(path, 0o600)
-    print(text, end="")
-    print("Saved to %s" % path)
-    if a.sd:
-        dst = os.path.join(a.sd, "dsidbg")
+    os.chmod(home_copy, 0o600)
+    result["text"], result["home_copy"] = text, home_copy
+    if sd_root:
+        dst = os.path.join(sd_root, "dsidbg")
         os.makedirs(dst, exist_ok=True)
-        shutil.copyfile(path, os.path.join(dst, "config.ini"))
-        print("Wrote %s" % os.path.join(dst, "config.ini"))
+        result["config"] = os.path.join(dst, "config.ini")
+        with open(result["config"], "w") as f:
+            f.write(text)
         loader = os.path.join(REPO_DIR, "build", "dsidbg-loader.nds")
         if os.path.exists(loader):
-            shutil.copyfile(loader, os.path.join(dst, "dsidbg-loader.nds"))
-            print("Copied the loader to %s" % os.path.join(dst, "dsidbg-loader.nds"))
-        else:
-            print("Build the loader first (tools/docker.sh make nds) to copy it too.")
+            result["loader"] = os.path.join(dst, "dsidbg-loader.nds")
+            shutil.copyfile(loader, result["loader"])
+    return result
+
+
+def do_setup(a):
+    r = setup_sd(a.sd, a.host, a.port, a.ssid, a.password)
+    print(r["text"], end="")
+    print("Saved to %s" % r["home_copy"])
+    if r["config"]:
+        print("Wrote %s%s" % (r["config"], " (kept: %s)" % ", ".join(r["kept"]) if r["kept"] else ""))
+        print("Copied the loader to %s" % r["loader"] if r["loader"]
+              else "Build the loader first (tools/docker.sh make nds) to copy it too.")
 
 
 def do_status(a):
@@ -318,6 +355,59 @@ def do_data(a):
         print("%s  %s" % (time.strftime("%H:%M:%S", time.localtime(item["time"])), item["hex"]))
 
 
+TRAY_PACKAGES = ["pystray", "pillow"]  # pystray pulls in PyObjC on macOS
+
+
+def tray_python():
+    """Python of the tray's private environment (~/.dsidbg/venv)."""
+    win = sys.platform.startswith("win")
+    return os.path.join(home_dir(), "venv", "Scripts" if win else "bin", "python.exe" if win else "python")
+
+
+def has_pystray():
+    try:
+        import pystray  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def do_tray(a):
+    venv_py = tray_python()
+    if a.setup:
+        if not os.path.exists(venv_py):
+            print("Creating %s" % os.path.dirname(os.path.dirname(venv_py)))
+            subprocess.run([sys.executable, "-m", "venv", os.path.dirname(os.path.dirname(venv_py))], check=True)
+        print("Installing %s from PyPI" % ", ".join(TRAY_PACKAGES))
+        subprocess.run([venv_py, "-m", "pip", "install", "--upgrade", "-q"] + TRAY_PACKAGES, check=True)
+        print("Done. Start it with: dsidbg tray")
+        return
+    env = dict(os.environ, PYTHONPATH=HOST_DIR + os.pathsep + os.environ.get("PYTHONPATH", ""))
+    if has_pystray():
+        py = sys.executable
+    elif os.path.exists(venv_py):
+        py = venv_py
+    else:
+        raise CliError("the tray needs pystray: run `dsidbg tray --setup` once")
+    if a.foreground:
+        if py != sys.executable:
+            os.execve(py, [py, "-m", "dsidbg", "tray", "--foreground"], env)
+        from .tray import main as tray_main
+        sys.exit(tray_main())
+    if sys.platform.startswith("win"):
+        pyw = os.path.join(os.path.dirname(py), "pythonw.exe")
+        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        kwargs = {"creationflags": flags}
+        py = pyw if os.path.exists(pyw) else py
+    else:
+        kwargs = {"start_new_session": True}
+    os.makedirs(home_dir(), exist_ok=True)
+    with open(os.path.join(home_dir(), "tray.log"), "a") as log:
+        subprocess.Popen([py, "-m", "dsidbg", "tray", "--foreground"], env=env, stdout=log, stderr=log,
+                         stdin=subprocess.DEVNULL, **kwargs)
+    print("dsidbg is running in the %s" % ("menu bar" if sys.platform == "darwin" else "system tray"))
+
+
 def do_mcp(a):
     from .mcp import main as mcp_main
     mcp_main()
@@ -428,6 +518,9 @@ def main(argv=None):
     sp.add_argument("app", nargs="?")
     sp.add_argument("path", nargs="?")
 
+    sp = cmd("tray", do_tray, "run the daemon from a menu bar / system tray icon", timeout=False)
+    sp.add_argument("--setup", action="store_true", help="install the tray's packages (pystray, Pillow) first")
+    sp.add_argument("--foreground", action="store_true", help="don't detach from the terminal")
     cmd("mcp", do_mcp, "run the MCP server on stdio (started by LLM harnesses)", timeout=False)
     sp = cmd("mcp-install", do_mcp_install, "register the MCP server with Claude Code, Codex and Claude Desktop",
              timeout=False)
@@ -437,6 +530,7 @@ def main(argv=None):
                     help="Claude Code scope (default: user, i.e. all projects)")
     sp.add_argument("--name", default="dsidbg", help="server name in the harness")
     sp.add_argument("--remove", action="store_true", help="unregister instead")
+    sp.add_argument("--skip-existing", action="store_true", help="leave harnesses that already have it alone")
     sp.add_argument("--dry-run", action="store_true", help="show what would change")
 
     a = p.parse_args(argv)
