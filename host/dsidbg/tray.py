@@ -10,7 +10,7 @@ import threading
 import time
 import traceback
 
-from . import cli, install, native
+from . import FROZEN, cli, code_id, install, native
 
 POLL_SECONDS = 2
 COLORS = {"connected": (52, 199, 89), "waiting": (255, 159, 10), "down": (255, 69, 58)}
@@ -36,6 +36,7 @@ class Tray:
         self.lines = ["Starting the daemon...", ""]
         self.state = "down"
         self.stopping = False
+        self.code = code_id()  # to notice when the code on disk changes under us
         self.lock = threading.Lock()  # one menu action at a time (each may show a dialog)
         item = pystray.MenuItem
         self.icon = pystray.Icon("dsidbg", icon_image("down"), "dsidbg", menu=pystray.Menu(
@@ -57,6 +58,8 @@ class Tray:
     # -- status ------------------------------------------------------------------------------------------------
     def poll(self):
         while not self.stopping:
+            if self.code_changed():
+                self.restart()
             try:
                 st, _ = cli.ensure_daemon()  # also restarts a daemon that died or runs older code
                 daemon = "Daemon: %s:%d" % (cli.local_ip(), st["port"])
@@ -70,6 +73,29 @@ class Tray:
                 self.state, self.lines = state, lines
                 self.on_main(self.refresh)
             time.sleep(POLL_SECONDS)
+
+    def code_changed(self):
+        """True when the repo's code was updated since this tray started. A running Python process keeps its
+        modules in memory but imports others from disk later, so mixing the two breaks (e.g. Set Up SD Card)."""
+        if FROZEN or self.lock.locked():  # the packaged app can't change; never restart during a menu action
+            return False
+        try:
+            return code_id() != self.code
+        except OSError:
+            return False
+
+    def restart(self):
+        """Replaces this process with a fresh tray running the current code."""
+        self.stopping = True
+        try:
+            os.remove(os.path.join(cli.home_dir(), "tray.pid"))  # Windows' exec makes a new process
+        except OSError:
+            pass
+        cmd = cli.self_command("tray", "--foreground")
+        print("%s dsidbg tray: code changed, restarting" % time.strftime("%Y-%m-%d %H:%M:%S"), file=sys.stderr)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.execve(cmd[0], cmd, cli.self_env())
 
     def refresh(self):
         self.icon.icon = icon_image(self.state)

@@ -223,6 +223,11 @@ def setup_sd(sd_root=None, host=None, port=proto.DEFAULT_PORT, ssid=None, passwo
         if os.path.exists(loader):
             result["loader"] = os.path.join(dst, "dsidbg-loader.nds")
             shutil.copyfile(loader, result["loader"])
+        for name in ("config.ini", "dsidbg-loader.nds"):  # macOS's metadata files on FAT cards ("._name")
+            try:
+                os.remove(os.path.join(dst, "._" + name))
+            except OSError:
+                pass
     return result
 
 
