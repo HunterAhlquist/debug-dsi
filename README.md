@@ -19,6 +19,8 @@ It is built with [BlocksDS](https://blocksds.skylyrac.net/) and targets DSi mode
 > the profiler, and crash and hang reports with recovery from the crash screen. The daemon, CLI and protocol also
 > have end-to-end tests against a simulator that runs the same agent code (`make test`). The daemon serves one
 > device at a time: the newest connection replaces the previous one.
+> See [docs/testing.md](docs/testing.md) for what has been verified and what hasn't (Windows and Linux apps, other
+> consoles and networks, long sessions).
 
 ## Safety
 
@@ -261,6 +263,7 @@ sim/                 simulator: the agent on the host, for tests
 host/dsidbg/         daemon, command line, MCP server, installer and tray app (Python 3; the tray also uses pystray)
 tests/               end-to-end tests (make test)
 docs/protocol.md     wire protocol
+docs/testing.md      test plan: what is verified, known issues, what still needs testing
 packaging/           PyInstaller recipe and release archives
 CHANGELOG.md         versions and compatibility rules
 ```
