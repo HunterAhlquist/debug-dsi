@@ -39,8 +39,8 @@ Each [release](../../releases) has:
 | `dsidbg-macos.zip` | `dsidbg.app` (menu bar app, CLI, daemon, MCP server; Apple silicon) and the loader |
 | `dsidbg-windows.zip` | `dsidbg\dsidbg.exe` (tray app when opened, CLI from a terminal) and the loader |
 | `dsidbg-linux.tar.gz` | `dsidbg/dsidbg` (tray app when run without arguments, CLI otherwise) and the loader |
-| `dsidbg-loader.nds` | the loader on its own |
-| `dsidbg-nds.zip` | loader, demo, `libdsidbg.a`, `dsidbg.h` and ELFs, for adding the agent to your own app |
+| `dsidbg-loader.nds`, `dsidbg-demo.nds` | the loader on its own, and the demo app |
+| `dsidbg-lib.zip` | the agent library for your own app: unzip into `$BLOCKSDSEXT` (see below) |
 
 The apps include Python and the tray's packages, and "Set Up SD Card..." copies their bundled loader. They aren't
 signed: on macOS, right-click the app and choose Open the first time; on Windows, choose More info > Run anyway.
@@ -166,8 +166,30 @@ quit and reopened. Other MCP clients can run `<repo>/bin/dsidbg mcp` as a stdio 
 
 ## Using the library in your app
 
-Link `build/nds/libdsidbg.a` with dswifi, use an ARM7 core with Wi-Fi (`arm7_dswifi.elf` or
-`arm7_dswifi_maxmod.elf`), and add `include/` to the include path:
+The library installs like BlocksDS's own extra libraries: a `dsidbg` folder with `include/` and `lib/` under
+`$BLOCKSDSEXT`. Either unzip `dsidbg-lib.zip` from a release there, or build it from source:
+
+```bash
+make lib && make install      # into $BLOCKSDSEXT/dsidbg; INSTALLDIR=... for another folder
+```
+
+Then, in a Makefile based on BlocksDS's templates, use an ARM7 core with Wi-Fi and add the library and dswifi:
+
+```make
+ARM7ELF := $(BLOCKSDS)/sys/arm7/main_core/arm7_dswifi_maxmod.elf   # or arm7_dswifi.elf without maxmod
+LIBS    := -ldsidbg -ldswifi9 -lmm9 -lnds9
+LIBDIRS := $(BLOCKSDSEXT)/dsidbg \
+           $(BLOCKSDS)/libs/dswifi \
+           $(BLOCKSDS)/libs/maxmod \
+           $(BLOCKSDS)/libs/libnds
+```
+
+That setup was tested with the unmodified `rom_arm9_only` template: the app ran in DSi mode on a DSi XL and connected
+over Wi-Fi. dsidbg is built and tested with BlocksDS 1.24.0 (dswifi 0.4.2). It relies on a few
+libnds internals (the IRQ vector, the BIOS exception stack, `getExceptionAddress`), so prefer the release that
+matches your BlocksDS version, or build it from source with your toolchain.
+
+In your code:
 
 ```c
 #include <dsidbg.h>
@@ -189,7 +211,7 @@ while (1) {
 }
 ```
 
-Libraries: `-Wl,--start-group -ldsidbg -ldswifi9 -lnds9 -lc -Wl,--end-group` (see the `Makefile`).
+Outside the templates, link with `-Wl,--start-group -ldsidbg -ldswifi9 -lnds9 -lc -Wl,--end-group`.
 
 Things to know:
 
@@ -239,6 +261,8 @@ sim/                 simulator: the agent on the host, for tests
 host/dsidbg/         daemon, command line, MCP server, installer and tray app (Python 3; the tray also uses pystray)
 tests/               end-to-end tests (make test)
 docs/protocol.md     wire protocol
+packaging/           PyInstaller recipe and release archives
+CHANGELOG.md         versions and compatibility rules
 ```
 
 ## Releases

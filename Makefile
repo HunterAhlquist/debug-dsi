@@ -1,13 +1,18 @@
 # debug-dsi build.
 #   make nds     DSi library, loader and demo (needs BlocksDS: run it as `tools/docker.sh make nds`)
+#   make lib     just the library
+#   make install the library into $(BLOCKSDSEXT)/dsidbg (include/, lib/), like BlocksDS's own extra libraries;
+#                INSTALLDIR=... picks another folder. `make uninstall` removes it.
 #   make sim     host simulator used by the tests (host compiler)
 #   make test    host tests (builds the simulator first)
 #   make all     tools/docker.sh make nds, then make test
 
 BUILD    := build
 BLOCKSDS ?= /opt/wonderful/thirdparty/blocksds/core
+BLOCKSDSEXT ?= /opt/blocksds/external
+INSTALLDIR  ?= $(BLOCKSDSEXT)/dsidbg
 
-.PHONY: all nds sim test clean
+.PHONY: all nds lib install uninstall sim test clean
 all:
 	tools/docker.sh make nds
 	$(MAKE) test
@@ -33,6 +38,19 @@ LIB_SRC  := src/agent.c src/hash.c src/platform_nds.c
 LIB_OBJ  := $(LIB_SRC:src/%.c=$(BUILD)/nds/lib/%.o) $(BUILD)/nds/lib/irq_nds.o
 
 nds: $(BUILD)/nds/libdsidbg.a $(BUILD)/dsidbg-loader.nds $(BUILD)/dsidbg-demo.nds
+
+lib: $(BUILD)/nds/libdsidbg.a
+
+install: $(BUILD)/nds/libdsidbg.a
+	mkdir -p $(INSTALLDIR)/include $(INSTALLDIR)/lib
+	cp include/dsidbg.h $(INSTALLDIR)/include/
+	cp $(BUILD)/nds/libdsidbg.a $(INSTALLDIR)/lib/
+	cp LICENSE $(INSTALLDIR)/LICENSE
+	@echo "installed dsidbg in $(INSTALLDIR)"
+
+uninstall:
+	@case "$(INSTALLDIR)" in */dsidbg) ;; *) echo "refusing to remove $(INSTALLDIR): not a dsidbg folder"; exit 1;; esac
+	rm -rf "$(INSTALLDIR)"
 
 $(BUILD)/nds/lib/%.o: src/%.c src/internal.h include/dsidbg.h
 	@mkdir -p $(@D)
