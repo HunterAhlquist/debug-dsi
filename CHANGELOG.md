@@ -5,7 +5,15 @@ host/dsidbg/__init__.py); the wire protocol has its own `PROTO_VERSION`, and the
 same one. `dsidbg_config` may gain fields: always start from `dsidbg_config_defaults()` and rebuild the app when the
 library changes (it is a static library).
 
-## 0.1.0 (unreleased)
+## 0.1.1 (2026-11-01)
+
+- The macOS app is signed with a Developer ID and notarized by Apple in the release workflow, so it opens without a
+  Gatekeeper warning.
+- Release archives hold only the app: the macOS zip unzips to `dsidbg.app`, the Windows and Linux archives to the
+  `dsidbg` folder. The loader is inside the app ("Set Up SD Card..." copies it); releases still attach
+  `dsidbg-loader.nds` on its own.
+
+## 0.1.0 (2026-10-31)
 
 First version.
 

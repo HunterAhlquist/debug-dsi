@@ -15,7 +15,7 @@ import zlib
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "host"))
 
-from dsidbg import cli, proto  # noqa: E402
+from dsidbg import DSIDBG_VERSION, cli, proto  # noqa: E402
 
 SIM = os.path.join(ROOT, "build", "dsidbg-sim")
 DSIDBG = os.path.join(ROOT, "bin", "dsidbg")
@@ -98,7 +98,7 @@ class EndToEnd(unittest.TestCase):
         self.start_sim()
         out = self.run_cli("status").stdout
         self.assertIn("sim sim-build", out)
-        self.assertIn("lib=0.1.0", out)
+        self.assertIn("lib=" + DSIDBG_VERSION, out)
         self.assertIn("ms", self.run_cli("ping").stdout)
         self.log_contains("sim started")
 
