@@ -49,6 +49,11 @@ class CliError(Exception):
     pass
 
 
+def abspath(path):
+    """Paths go to the daemon, which runs in another folder: make them absolute here (None stays None)."""
+    return os.path.abspath(path) if path else path
+
+
 def call(req, on_line=None):
     """Sends one request to the daemon. Streamed lines go to on_line; returns the final reply."""
     path = control_socket(home_dir())
@@ -326,7 +331,8 @@ def do_push(a):
     r = call({"cmd": "put", "local": os.path.abspath(a.local), "remote": remote, "timeout": a.timeout})
     print("%s: %d bytes in %.1f s (%.1f KiB/s)" % (remote, r["bytes"], r["seconds"], r["kib_per_s"]))
     if a.elf:
-        call({"cmd": "elf", "app": a.app or os.path.splitext(os.path.basename(a.local))[0], "path": a.elf})
+        call({"cmd": "elf", "app": a.app or os.path.splitext(os.path.basename(a.local))[0],
+              "path": abspath(a.elf)})
     if a.launch:
         launch(remote, a.wait, a.timeout)
 
@@ -373,11 +379,11 @@ def do_prof(a):
     if a.action == "start":
         print("profiling (%s)" % call({"cmd": "prof_start", "timeout": a.timeout})["reply"])
     elif a.action == "stop":
-        print_prof(call({"cmd": "prof_stop", "elf": a.elf, "top": a.top, "timeout": a.timeout}))
+        print_prof(call({"cmd": "prof_stop", "elf": abspath(a.elf), "top": a.top, "timeout": a.timeout}))
     else:  # run
         call({"cmd": "prof_start", "timeout": a.timeout})
         time.sleep(a.seconds)
-        print_prof(call({"cmd": "prof_stop", "elf": a.elf, "top": a.top, "timeout": a.timeout}))
+        print_prof(call({"cmd": "prof_stop", "elf": abspath(a.elf), "top": a.top, "timeout": a.timeout}))
 
 
 def do_log(a):
@@ -392,7 +398,7 @@ def do_log(a):
 
 
 def do_crash(a):
-    r = call({"cmd": "crash", "elf": a.elf, "wait": a.wait, "index": a.index, "after": START if a.new else 0})
+    r = call({"cmd": "crash", "elf": abspath(a.elf), "wait": a.wait, "index": a.index, "after": START if a.new else 0})
     if a.json:
         print(json.dumps(r["crash"], indent=1))
     else:

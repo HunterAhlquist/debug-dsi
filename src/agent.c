@@ -220,6 +220,8 @@ static int queue_msg(uint16_t type, const void *a, size_t alen, const void *b, s
 #define TRACE(...) do { if (cfg.flags & DSIDBG_TRACE) { dsidbg_log("dsidbg: " __VA_ARGS__); log_flush(); } } while (0)
 static void log_flush(void);
 
+static void shot_cancel(void);
+
 static void drop_conn(const char *why)
 {
     TRACE("drop: %s (state %d, upload %s)", why, st, put_fd >= 0 ? "open" : "none");
@@ -232,6 +234,7 @@ static void drop_conn(const char *why)
     retry_at = dsidbg__plat_ms() + 2000;
     rxlen = 0;
     if (get_f) get_close();
+    shot_cancel(); // its reply can't reach the host any more (a pending hook just isn't asked again)
     if (put_fd >= 0) {
         put_close();
         TRACE("drop: upload file closed");
@@ -548,13 +551,34 @@ static void cmd_input(uint16_t seq, const uint8_t *p, size_t n)
     ack(seq, 0, "frame %lu", (unsigned long)frame);
 }
 
-static void cmd_shot(uint16_t seq, const uint8_t *p, size_t n)
+// A screenshot whose hook answered DSIDBG_SHOT_PENDING: the hook is asked again from later frames (shot_step).
+#define SHOT_PENDING_MS 3000
+static uint16_t *shot_px;
+static uint16_t shot_seq;
+static int shot_screen;
+static uint32_t shot_deadline;
+
+static void shot_cancel(void)
 {
-    int screen = n ? p[0] : DSIDBG_SCREEN_TOP;
-    uint16_t *px = malloc(256 * 192 * 2);
-    if (!px) { ack(seq, -1, "out of memory"); return; }
+    free(shot_px);
+    shot_px = NULL;
+}
+
+// Asks the hook (again), falls back to the display capture, and replies; or leaves the shot pending.
+static void shot_finish(void)
+{
+    uint16_t *px = shot_px;
+    int screen = shot_screen;
+    uint16_t seq = shot_seq;
     int r = -1;
     if (cfg.screenshot && !dsidbg__in_panic) r = cfg.screenshot(screen, px);
+    if (r == DSIDBG_SHOT_PENDING) {
+        if ((int32_t)(dsidbg__plat_ms() - shot_deadline) < 0) return; // asked again on a later frame
+        shot_cancel();
+        ack(seq, -1, "screenshot timed out: the app's screenshot hook stayed pending");
+        return;
+    }
+    shot_px = NULL; // this function replies and frees it
     if (r != 0 && screen == DSIDBG_SCREEN_TOP && cfg.capture_bank >= 0)
         r = dsidbg__plat_capture(screen, px, cfg.capture_bank);
     if (r != 0) {
@@ -569,6 +593,17 @@ static void cmd_shot(uint16_t seq, const uint8_t *p, size_t n)
     put16(h + 6, 0);
     send_direct(MSG_SHOT_DATA, seq, h, 8, px, 256 * 192 * 2);
     free(px);
+}
+
+static void cmd_shot(uint16_t seq, const uint8_t *p, size_t n)
+{
+    if (shot_px) { ack(seq, -1, "a screenshot is already in progress"); return; }
+    shot_px = malloc(256 * 192 * 2);
+    if (!shot_px) { ack(seq, -1, "out of memory"); return; }
+    shot_screen = n ? p[0] : DSIDBG_SCREEN_TOP;
+    shot_seq = seq;
+    shot_deadline = dsidbg__plat_ms() + SHOT_PENDING_MS;
+    shot_finish();
 }
 
 static void remember_launch(const char *sd_path)
@@ -1067,6 +1102,7 @@ static void service(void)
         if (!crash_files_done) { crash_files_done = 1; send_crash_files(); }
         if (prof_w - prof_r >= 512) prof_flush(1024, 0);
         if (get_f) get_step();
+        if (shot_px && st == ST_READY) shot_finish();
         if (st != ST_READY) break;
         if (now - last_status >= 1000) send_status(now);
         flush_tx(0);

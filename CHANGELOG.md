@@ -5,6 +5,14 @@ host/dsidbg/__init__.py); the wire protocol has its own `PROTO_VERSION`, and the
 same one. `dsidbg_config` may gain fields: always start from `dsidbg_config_defaults()` and rebuild the app when the
 library changes (it is a static library).
 
+## 0.1.3 (2026-11-01)
+
+- A screenshot hook can return `DSIDBG_SHOT_PENDING` when the image needs frames the app hasn't drawn yet: the agent
+  calls it again from later `dsidbg_frame()` calls, for up to 3 seconds. ff9-ds uses it to free a texture bank
+  for the capture in its GX renderer. Any other non-zero value still falls back to `capture_bank`.
+- `push --elf`, `prof --elf` and `crash --elf` take paths relative to the current folder (they were looked up in
+  the daemon's folder).
+
 ## 0.1.2 (2026-11-01)
 
 - The library's internal functions are named `dsidbg__plat_*` instead of `plat_*`, which clashed with an app's own

@@ -4,7 +4,8 @@
 //   dsidbg-sim --host 127.0.0.1 --port 7710 --key SECRET --root DIR [--name sim]
 //
 // It behaves like a small app: it logs button changes, sends a counter on data channel 1 every second, feeds fake
-// profiler samples, and answers `dsidbg cmd` with: echo TEXT, keys, crash, panic TEXT, hang.
+// profiler samples, and answers `dsidbg cmd` with: echo TEXT, keys, crash, panic TEXT, hang, shotpending N (the
+// screenshot hook answers DSIDBG_SHOT_PENDING N times, then lets the capture run; -1: always pending).
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +18,16 @@ void dsidbg_sim_set_root(const char *root);
 int dsidbg_sim_watchdog_expired(void);
 
 static int hang;
+static int shot_pending, shot_pending_left;
+
+static int screenshot(int screen, uint16_t *pixels)
+{
+    (void)screen; (void)pixels;
+    if (shot_pending < 0) return DSIDBG_SHOT_PENDING;
+    if (shot_pending_left > 0) { shot_pending_left--; return DSIDBG_SHOT_PENDING; }
+    shot_pending_left = shot_pending; // the next screenshot waits as long again
+    return -1;                        // not handled: the agent falls back to its capture
+}
 
 static int command(const char *line, char *reply, size_t cap)
 {
@@ -33,6 +44,11 @@ static int command(const char *line, char *reply, size_t cap)
     }
     if (!strncmp(line, "panic", 5)) dsidbg_panic(line[5] ? line + 6 : "sim panic");
     if (!strcmp(line, "hang")) { hang = 1; snprintf(reply, cap, "hanging"); return 0; }
+    if (!strncmp(line, "shotpending ", 12)) {
+        shot_pending = shot_pending_left = atoi(line + 12);
+        snprintf(reply, cap, "screenshot hook pending %d times", shot_pending);
+        return 0;
+    }
     snprintf(reply, cap, "unknown command '%s'", line);
     return -1;
 }
@@ -45,6 +61,7 @@ int main(int argc, char **argv)
     cfg.build_id = "sim-build";
     cfg.capture_bank = 0;
     cfg.command = command;
+    cfg.screenshot = screenshot;
     cfg.config_path = NULL;
     for (int i = 1; i + 1 < argc; i += 2) {
         if (!strcmp(argv[i], "--host")) cfg.host = argv[i + 1];

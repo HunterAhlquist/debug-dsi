@@ -4,7 +4,7 @@ import hashlib
 import os
 import sys
 
-DSIDBG_VERSION = "0.1.2"  # keep in sync with include/dsidbg.h
+DSIDBG_VERSION = "0.1.3"  # keep in sync with include/dsidbg.h
 
 # True in the packaged app (PyInstaller), where the code is inside the executable.
 FROZEN = bool(getattr(sys, "frozen", False))

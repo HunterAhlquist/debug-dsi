@@ -139,6 +139,23 @@ class EndToEnd(unittest.TestCase):
         # Last pixel of the first row: the simulator's gradient has full red there.
         self.assertEqual(raw[1 + 255 * 3], 255)
 
+    def test_04b_screenshot_hook_pending(self):
+        # A hook that needs a few frames (DSIDBG_SHOT_PENDING) still gets its screenshot; one that never finishes
+        # times out with a clear error, and the next screenshot works again.
+        out = os.path.join(self.tmp, "pending.png")
+        try:
+            self.run_cli("cmd", "shotpending 5")
+            self.run_cli("shot", "-o", out)
+            with open(out, "rb") as f:
+                self.assertEqual(f.read(8), b"\x89PNG\r\n\x1a\n")
+            self.run_cli("cmd", "shotpending -1")
+            r = self.run_cli("shot", "-o", out, check=False)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("timed out", r.stdout + r.stderr)
+        finally:
+            self.run_cli("cmd", "shotpending 0")
+        self.run_cli("shot", "-o", out)
+
     def test_05_files(self):
         data = os.urandom(100000)
         local = os.path.join(self.tmp, "game.nds")

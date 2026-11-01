@@ -32,11 +32,14 @@
 extern "C" {
 #endif
 
-#define DSIDBG_VERSION "0.1.2"
+#define DSIDBG_VERSION "0.1.3"
 
 // Screens for screenshots.
 #define DSIDBG_SCREEN_TOP    0 // the main 2D/3D engine (display capture)
 #define DSIDBG_SCREEN_BOTTOM 1 // only through the app's screenshot hook
+
+// dsidbg_config.screenshot's return value for "not ready: call me again on a later frame"
+#define DSIDBG_SHOT_PENDING 1
 
 // dsidbg_config.flags
 #define DSIDBG_NO_CRASH_HANDLER (1u << 0) // keep the app's own exception handler
@@ -74,7 +77,10 @@ typedef struct dsidbg_config {
     unsigned tx_queue_kib;
 
     // Optional: fill a 256x192 RGB555 image of `screen`. Return 0 on success. Called before the display capture
-    // for the top screen, and is the only way to capture the bottom screen.
+    // for the top screen, and is the only way to capture the bottom screen. Any other non-zero value falls back to
+    // the display capture into capture_bank (top screen). Return DSIDBG_SHOT_PENDING when the image needs frames
+    // the app hasn't drawn yet (say, to free a VRAM bank for the capture): the agent calls the hook again from
+    // later dsidbg_frame() calls with the same buffer, for up to 3 seconds.
     int (*screenshot)(int screen, uint16_t *pixels);
 
     // Optional: handle a text command from the daemon (`dsidbg cmd ...`). Write a reply into `reply` and return 0

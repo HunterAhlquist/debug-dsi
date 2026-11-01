@@ -14,7 +14,7 @@ daemon on your computer. From the command line (or an AI agent) you can then:
 
 It is built with [BlocksDS](https://blocksds.skylyrac.net/) and targets DSi mode (DSi Wi-Fi supports WPA2).
 
-> Status: 0.1.2, tested on a DSi XL (hiyaCFW + Unlaunch, home Wi-Fi) and in a melonDS development build:
+> Status: 0.1.3, tested on a DSi XL (hiyaCFW + Unlaunch, home Wi-Fi) and in a melonDS development build:
 > Wi-Fi, input, screenshots, logs, file transfer (about 150 KiB/s), pushing and booting a build through Unlaunch,
 > the profiler, and crash and hang reports with recovery from the crash screen. The daemon, CLI and protocol also
 > have end-to-end tests against a simulator that runs the same agent code (`make test`). The daemon serves one
@@ -238,6 +238,9 @@ Things to know:
     nothing the frame needs (capture writes 96 KiB into it).
   - A `screenshot` hook in the config can provide the image instead, and is the only way to capture the bottom
     screen.
+  - An app with no bank to spare (a 3D app with textures in all four banks) can free one per screenshot: its hook
+    returns `DSIDBG_SHOT_PENDING` until it has drawn frames without that bank, and is called again from later
+    `dsidbg_frame()` calls (up to 3 s). ff9-ds does this; its `port/ds/dsidbg_port.c` is an example.
 - **Resources** (measured on a DSi XL with the demo connected):
   - About 14 KiB of code and 13 KiB of static memory; 8 KiB of that is a stack reserved for crash reports.
   - `dsidbg_init()` allocates a 16 KiB send queue (`tx_queue_kib`) and a 12 KiB receive buffer. The heap in use
