@@ -159,7 +159,7 @@ static int local_path(const char *sd_path, char *out, size_t cap)
 {
     if (strncmp(sd_path, "sd:/", 4) != 0 || strstr(sd_path, "..") || strlen(sd_path) > 240)
         return -1;
-    return plat_path(sd_path, out, cap);
+    return dsidbg__plat_path(sd_path, out, cap);
 }
 
 static void mkdirs_for(const char *local)
@@ -229,7 +229,7 @@ static void drop_conn(const char *why)
     // connection, so drop what's queued; before that (failed connects), keep it: it holds the boot logs.
     if (st == ST_READY) txq_r = txq_w;
     st = ST_DOWN;
-    retry_at = plat_ms() + 2000;
+    retry_at = dsidbg__plat_ms() + 2000;
     rxlen = 0;
     if (get_f) get_close();
     if (put_fd >= 0) {
@@ -246,15 +246,15 @@ static long raw_send(const void *p, size_t n, int block)
 {
     const uint8_t *b = p;
     size_t done = 0;
-    uint32_t t0 = plat_ms();
+    uint32_t t0 = dsidbg__plat_ms();
     while (done < n) {
         long r = send(sock, b + done, n - done, 0);
-        if (r > 0) { done += (size_t)r; t0 = plat_ms(); continue; }
+        if (r > 0) { done += (size_t)r; t0 = dsidbg__plat_ms(); continue; }
         if (r < 0 && would_block()) {
             if (!block) break;
-            if (plat_ms() - t0 > SEND_TIMEOUT_MS) { drop_conn("send timeout"); return -1; }
-            plat_heartbeat();
-            plat_yield();
+            if (dsidbg__plat_ms() - t0 > SEND_TIMEOUT_MS) { drop_conn("send timeout"); return -1; }
+            dsidbg__plat_heartbeat();
+            dsidbg__plat_yield();
             continue;
         }
         drop_conn("send failed");
@@ -324,7 +324,7 @@ static void log_flush(void)
 
 void dsidbg_write(const char *text, size_t len)
 {
-    if (cfg.flags & DSIDBG_ECHO_LOG) plat_console_write(text, len);
+    if (cfg.flags & DSIDBG_ECHO_LOG) dsidbg__plat_console_write(text, len);
     for (size_t i = 0; i < len; i++) {
         logline[loglen++] = text[i];
         if (text[i] == '\n' || loglen == LOGLINE_MAX) log_flush();
@@ -366,7 +366,7 @@ static void send_status(uint32_t now)
                      "frame=%lu\nfps=%lu.%lu\nuptime_ms=%lu\nlog_drops=%lu\nprof=%d\npanic=%d\nheap_kib=%lu\n",
                      (unsigned long)frame, (unsigned long)(fps10 / 10), (unsigned long)(fps10 % 10),
                      (unsigned long)now, (unsigned long)log_drops, prof_on, dsidbg__in_panic,
-                     (unsigned long)(plat_heap_used() / 1024));
+                     (unsigned long)(dsidbg__plat_heap_used() / 1024));
     queue_msg(MSG_STATUS, text, (size_t)n, NULL, 0);
     last_status = now;
     frames_at_status = frame;
@@ -376,14 +376,14 @@ static void send_info(void)
 {
     char text[512], plat[256] = "";
     struct in_addr ip;
-    ip.s_addr = plat_ip();
-    plat_info(plat, sizeof plat);
+    ip.s_addr = dsidbg__plat_ip();
+    dsidbg__plat_info(plat, sizeof plat);
     int n = snprintf(text, sizeof text,
                      "lib=%s\nproto=%d\napp=%s\nbuild=%s\nip=%s\nhost_from=%s\ncapture_bank=%d\nwatchdog=%u\n"
                      "prof_hz=%lu\n%s",
                      DSIDBG_VERSION, PROTO_VERSION, cfg.app_name, cfg.build_id, inet_ntoa(ip),
                      discovered ? "discovery" : "config", cfg.capture_bank,
-                     cfg.watchdog_seconds, (unsigned long)plat_prof_hz(), plat);
+                     cfg.watchdog_seconds, (unsigned long)dsidbg__plat_prof_hz(), plat);
     send_direct(MSG_INFO, 0, text, (size_t)n, NULL, 0);
 }
 
@@ -409,7 +409,7 @@ static uint32_t prof_flush(uint32_t max, int direct)
     if (n > PROF_N - at) n = PROF_N - at; // contiguous part of the ring
     if (!n) return 0;
     uint8_t hz[4];
-    put32(hz, plat_prof_hz());
+    put32(hz, dsidbg__plat_prof_hz());
     const void *pcs = (const void *)&prof_buf[at];
     int r = direct ? send_direct(MSG_PROF, 0, hz, 4, pcs, n * 4) : queue_msg(MSG_PROF, hz, 4, pcs, n * 4);
     if (r < 0) return 0;
@@ -490,31 +490,31 @@ void dsidbg__panic_main(void)
     // Interrupting the thread scheduler or a network thread leaves no way to switch threads: the network and the
     // card are out of reach, so only the screen can show the report. (Before the stack copy: for a hang in the
     // scheduler this switches the registers to the main thread's wait point.)
-    int threads = plat_panic_on_main_thread(c);
+    int threads = dsidbg__plat_panic_on_main_thread(c);
     uint32_t sp = c->regs[13], n = CRASH_STACK_MAX;
-    while (n && !plat_valid_ram(sp, n)) n /= 2;
+    while (n && !dsidbg__plat_valid_ram(sp, n)) n /= 2;
     if (n) memcpy(crash_stack, (const void *)(uintptr_t)sp, n);
     c->stack_base = sp;
     c->stack_len = n;
     crash_pending = 1;
     const char *stuck = "not sendable: press power";
     log_flush();
-    plat_crash_show(c, threads ? dsidbg_status() : stuck);
+    dsidbg__plat_crash_show(c, threads ? dsidbg_status() : stuck);
 
-    uint32_t t0 = plat_ms(), shown = t0;
+    uint32_t t0 = dsidbg__plat_ms(), shown = t0;
     int saved = 0;
     for (;;) {
         if (inited && threads) service();
-        uint32_t now = plat_ms();
+        uint32_t now = dsidbg__plat_ms();
         if (threads && crash_pending && !saved && (cfg.flags & DSIDBG_SAVE_CRASHES) && now - t0 > CRASH_SAVE_DELAY_MS) {
             save_crash_file();
             saved = 1;
         }
         if (now - shown > 1000) {
-            plat_crash_show(c, !threads ? stuck : crash_pending ? dsidbg_status() : "reported to host");
+            dsidbg__plat_crash_show(c, !threads ? stuck : crash_pending ? dsidbg_status() : "reported to host");
             shown = now;
         }
-        plat_wait_frame();
+        dsidbg__plat_wait_frame();
     }
 }
 
@@ -555,7 +555,8 @@ static void cmd_shot(uint16_t seq, const uint8_t *p, size_t n)
     if (!px) { ack(seq, -1, "out of memory"); return; }
     int r = -1;
     if (cfg.screenshot && !dsidbg__in_panic) r = cfg.screenshot(screen, px);
-    if (r != 0 && screen == DSIDBG_SCREEN_TOP && cfg.capture_bank >= 0) r = plat_capture(screen, px, cfg.capture_bank);
+    if (r != 0 && screen == DSIDBG_SCREEN_TOP && cfg.capture_bank >= 0)
+        r = dsidbg__plat_capture(screen, px, cfg.capture_bank);
     if (r != 0) {
         free(px);
         ack(seq, -1, screen == DSIDBG_SCREEN_TOP ? "no capture source: set capture_bank or a screenshot hook"
@@ -595,7 +596,7 @@ static void cmd_reboot(uint16_t seq, const uint8_t *p, size_t n)
     ack(seq, 0, "rebooting");
     log_flush();
     flush_tx(1);
-    plat_reboot(path[0] ? path : NULL);
+    dsidbg__plat_reboot(path[0] ? path : NULL);
 }
 
 static void cmd_put_begin(uint16_t seq, const uint8_t *p, size_t n)
@@ -633,7 +634,7 @@ static void cmd_put_data(const uint8_t *p, size_t n)
         p += take;
         n -= take;
         if (put_fill == PUT_BUFFER && put_flush() < 0) { put_err = errno ? errno : EIO; return; }
-        plat_heartbeat(); // a slow upload is not a hang
+        dsidbg__plat_heartbeat(); // a slow upload is not a hang
     }
 }
 
@@ -644,7 +645,7 @@ static void cmd_put_sync(uint16_t seq)
 {
     if (put_fd < 0) { ack(seq, -1, "no transfer in progress"); return; }
     if (!put_err && put_fill && put_flush() < 0) put_err = errno ? errno : EIO;
-    plat_heartbeat();
+    dsidbg__plat_heartbeat();
     if (put_err) { ack(seq, -1, "write failed (errno %d)", put_err); return; }
     ack(seq, 0, "%lu", (unsigned long)put_got);
 }
@@ -789,7 +790,7 @@ static void handle(uint16_t type, uint16_t seq, const uint8_t *p, size_t n)
         if (diff) {
             drop_conn("host failed authentication: check the key");
             connect_fails++;
-            retry_at = plat_ms() + 10000;
+            retry_at = dsidbg__plat_ms() + 10000;
             return;
         }
         uint8_t msg2[10 + 32];
@@ -821,7 +822,7 @@ static void handle(uint16_t type, uint16_t seq, const uint8_t *p, size_t n)
         if (!prof_buf && !(prof_buf = malloc(PROF_N * sizeof *prof_buf))) { ack(seq, -1, "out of memory"); break; }
         prof_r = prof_w;
         prof_on = 1; // after the buffer exists: the IRQ hook checks only this
-        ack(seq, 0, "%lu Hz", (unsigned long)plat_prof_hz());
+        ack(seq, 0, "%lu Hz", (unsigned long)dsidbg__plat_prof_hz());
         break;
     case MSG_PROF_STOP:
         prof_on = 0;
@@ -834,7 +835,7 @@ static void handle(uint16_t type, uint16_t seq, const uint8_t *p, size_t n)
     case MSG_WATCHDOG:
         if (n < 4) { ack(seq, -1, "bad request"); break; }
         cfg.watchdog_seconds = get32(p);
-        plat_set_watchdog(cfg.watchdog_seconds);
+        dsidbg__plat_set_watchdog(cfg.watchdog_seconds);
         ack(seq, 0, "watchdog %u s", cfg.watchdog_seconds);
         break;
     default: ack(seq, -1, "unknown message 0x%04x", type); break;
@@ -878,8 +879,8 @@ static void pump_rx(void)
 static void make_nonce(void)
 {
     static uint32_t counter;
-    uint32_t seed[7] = {plat_ms(), frame, ++counter, plat_ip(), (uint32_t)(uintptr_t)&seed, plat_hw_keys(),
-                        plat_entropy()};
+    uint32_t seed[7] = {dsidbg__plat_ms(), frame, ++counter, dsidbg__plat_ip(), (uint32_t)(uintptr_t)&seed,
+                        dsidbg__plat_hw_keys(), dsidbg__plat_entropy()};
     uint8_t mac[20];
     dsidbg__hmac_sha1(key, key_len, seed, sizeof seed, mac);
     memcpy(nonce_d, mac, 16);
@@ -891,7 +892,7 @@ static void on_connected(void)
     uint8_t hello[4 + 16 + 160];
     size_t n = 0;
     st = ST_HANDSHAKE;
-    st_time = plat_ms();
+    st_time = dsidbg__plat_ms();
     make_nonce();
     put16(hello, PROTO_VERSION);
     put16(hello + 2, 0);
@@ -911,7 +912,7 @@ static void start_connect(void)
     a.sin_addr.s_addr = cur_addr;
     TRACE("connect: %s:%u", inet_ntoa(a.sin_addr), cur_port);
     sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) { retry_at = plat_ms() + 2000; return; }
+    if (sock < 0) { retry_at = dsidbg__plat_ms() + 2000; return; }
     int one = 1;
     setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
 #ifdef SO_NOSIGPIPE
@@ -922,12 +923,12 @@ static void start_connect(void)
     struct sockaddr_in local;
     memset(&local, 0, sizeof local);
     local.sin_family = AF_INET;
-    local.sin_port = htons((uint16_t)(49152 + plat_entropy() % 16000));
+    local.sin_port = htons((uint16_t)(49152 + dsidbg__plat_entropy() % 16000));
     local.sin_addr.s_addr = htonl(INADDR_ANY);
     bind(sock, (struct sockaddr *)&local, sizeof local); // on failure the stack picks a port
     fcntl(sock, F_SETFL, O_NONBLOCK);
     st = ST_CONNECTING;
-    st_time = plat_ms();
+    st_time = dsidbg__plat_ms();
     if (connect(sock, (struct sockaddr *)&a, sizeof a) == 0) on_connected();
     else if (!would_block()) { drop_conn("connect failed"); connect_fails++; }
 }
@@ -951,7 +952,7 @@ static void check_connect(void)
         return;
     }
     if (r < 0) { drop_conn("poll failed"); connect_fails++; return; }
-    if (plat_ms() - st_time > CONNECT_TIMEOUT_MS) { drop_conn("connect timeout"); connect_fails++; }
+    if (dsidbg__plat_ms() - st_time > CONNECT_TIMEOUT_MS) { drop_conn("connect timeout"); connect_fails++; }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -967,16 +968,16 @@ static void start_discovery(void)
 {
     TRACE("discovery: broadcasting");
     udp = socket(AF_INET, SOCK_DGRAM, 0);
-    if (udp < 0) { retry_at = plat_ms() + 2000; return; }
+    if (udp < 0) { retry_at = dsidbg__plat_ms() + 2000; return; }
     int one = 1;
     setsockopt(udp, SOL_SOCKET, SO_BROADCAST, &one, sizeof one);
     fcntl(udp, F_SETFL, O_NONBLOCK);
-    uint32_t seed[4] = {plat_entropy(), plat_ms(), frame, (uint32_t)connect_fails};
+    uint32_t seed[4] = {dsidbg__plat_entropy(), dsidbg__plat_ms(), frame, (uint32_t)connect_fails};
     uint8_t mac[20];
     dsidbg__hmac_sha1(key, key_len, seed, sizeof seed, mac);
     memcpy(disc_nonce, mac, 16);
     st = ST_DISCOVER;
-    disc_until = plat_ms() + DISCOVER_MS;
+    disc_until = dsidbg__plat_ms() + DISCOVER_MS;
     disc_next = 0;
 }
 
@@ -987,7 +988,7 @@ static void poll_discovery(uint32_t now)
         memcpy(req, "DSDBGQ1", 8); // includes the terminating NUL: 8 bytes
         memcpy(req + 8, disc_nonce, 16);
         uint32_t targets[4];
-        int n = plat_discovery_targets(targets, 4);
+        int n = dsidbg__plat_discovery_targets(targets, 4);
         for (int i = 0; i < n; i++) {
             struct sockaddr_in to;
             memset(&to, 0, sizeof to);
@@ -1037,8 +1038,8 @@ static void poll_discovery(uint32_t now)
 static void service(void)
 {
     if (st == ST_OFF) return;
-    uint32_t now = plat_ms();
-    if (!plat_net_poll()) {
+    uint32_t now = dsidbg__plat_ms();
+    if (!dsidbg__plat_net_poll()) {
         if (sock >= 0) drop_conn("wifi lost");
         if (udp >= 0) { stop_discovery(); st = ST_DOWN; }
         return;
@@ -1127,11 +1128,11 @@ int dsidbg_init(const dsidbg_config *in)
     if (!cfg.build_id) cfg.build_id = "";
     if (!cfg.config_path) cfg.config_path = "sd:/dsidbg/config.ini";
 
-    plat_crash_install(cfg.flags);
-    plat_set_watchdog(cfg.watchdog_seconds);
+    dsidbg__plat_crash_install(cfg.flags);
+    dsidbg__plat_set_watchdog(cfg.watchdog_seconds);
     inited = 1;
 
-    if (plat_fs_init() == 0) load_config(cfg.config_path);
+    if (dsidbg__plat_fs_init() == 0) load_config(cfg.config_path);
     if (cfg.host) snprintf(host, sizeof host, "%s", cfg.host);
     if (cfg.port) port = cfg.port;
     if (cfg.key) snprintf(key, sizeof key, "%s", cfg.key);
@@ -1160,29 +1161,29 @@ int dsidbg_init(const dsidbg_config *in)
     if (host[0] && strcmp(host, "auto") != 0 && inet_pton(AF_INET, host, &ha) == 1) cfg_addr = ha.s_addr;
     cur_addr = cfg_addr;
     cur_port = port;
-    if (plat_init(&cfg, ssid[0] ? ssid : NULL, pass) != 0) {
+    if (dsidbg__plat_init(&cfg, ssid[0] ? ssid : NULL, pass) != 0) {
         snprintf(off_reason, sizeof off_reason, "wifi init failed");
         return -1;
     }
     st = ST_DOWN;
     retry_at = 0;
-    last_status = plat_ms();
+    last_status = dsidbg__plat_ms();
     return 0;
 }
 
-void dsidbg_heartbeat(void) { plat_heartbeat(); }
+void dsidbg_heartbeat(void) { dsidbg__plat_heartbeat(); }
 
 void dsidbg_frame(void)
 {
     frame++;
-    plat_heartbeat();
+    dsidbg__plat_heartbeat();
     int k = 0;
     for (int i = 0; i < ninj; i++)
         if (inj[i].end > frame) inj[k++] = inj[i];
     ninj = k;
     log_flush();
     service();
-    plat_yield();
+    dsidbg__plat_yield();
 }
 
 int dsidbg_connected(void) { return st == ST_READY; }
@@ -1202,7 +1203,7 @@ const char *dsidbg_status(void)
     switch (st) {
     case ST_OFF: snprintf(status_text, sizeof status_text, "off: %s", off_reason); break;
     case ST_DOWN:
-        if (!plat_net_poll()) snprintf(status_text, sizeof status_text, "wifi: %s", plat_net_state());
+        if (!dsidbg__plat_net_poll()) snprintf(status_text, sizeof status_text, "wifi: %s", dsidbg__plat_net_state());
         else snprintf(status_text, sizeof status_text, "waiting for %s (%.60s)", cur_text(), off_reason);
         break;
     case ST_DISCOVER: snprintf(status_text, sizeof status_text, "searching for the computer"); break;
@@ -1237,7 +1238,7 @@ int dsidbg_touch(int16_t *x, int16_t *y)
 
 void dsidbg_scan_keys(void)
 {
-    held = dsidbg_keys(plat_hw_keys());
+    held = dsidbg_keys(dsidbg__plat_hw_keys());
     down = held & ~prev_held;
     up = prev_held & ~held;
     prev_held = held;
@@ -1247,7 +1248,7 @@ uint32_t dsidbg_keys_held(void) { return held; }
 uint32_t dsidbg_keys_down(void) { return down; }
 uint32_t dsidbg_keys_up(void) { return up; }
 
-void dsidbg_capture_stdout(int echo) { plat_hook_stdout(echo ? 2 : 1); }
+void dsidbg_capture_stdout(int echo) { dsidbg__plat_hook_stdout(echo ? 2 : 1); }
 
 void dsidbg_reboot(const char *sd_path)
 {
@@ -1256,5 +1257,5 @@ void dsidbg_reboot(const char *sd_path)
     else sd_path = NULL;
     log_flush();
     if (st == ST_READY) flush_tx(1);
-    plat_reboot(sd_path);
+    dsidbg__plat_reboot(sd_path);
 }

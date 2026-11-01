@@ -4,7 +4,7 @@ import hashlib
 import os
 import sys
 
-DSIDBG_VERSION = "0.1.1"  # keep in sync with include/dsidbg.h
+DSIDBG_VERSION = "0.1.2"  # keep in sync with include/dsidbg.h
 
 # True in the packaged app (PyInstaller), where the code is inside the executable.
 FROZEN = bool(getattr(sys, "frozen", False))
@@ -24,6 +24,22 @@ def code_id():
             with open(os.path.join(here, name), "rb") as f:
                 h.update(name.encode() + b"\0" + f.read())
     return h.hexdigest()[:12]
+
+
+def install_origin():
+    """Which install this code runs from: the app's executable, or the package folder of a checkout. Two installs
+    (say the app in /Applications and a repo checkout) share one daemon instead of replacing each other's."""
+    if FROZEN:
+        return os.path.realpath(sys.executable)
+    return os.path.dirname(os.path.realpath(__file__))
+
+
+def version_tuple(version):
+    """"0.1.10" -> (0, 1, 10); anything unparsable sorts first."""
+    try:
+        return tuple(int(p) for p in str(version).split("."))
+    except ValueError:
+        return ()
 
 
 def control_socket(home):

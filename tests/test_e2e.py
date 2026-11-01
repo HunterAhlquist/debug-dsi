@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 """End-to-end tests: the real daemon and CLI against the simulator, which runs the same agent code as the DSi."""
 import json
+import re
 import os
 import shutil
 import socket
@@ -312,8 +313,10 @@ class EndToEnd(unittest.TestCase):
         # The computer's address changed: the configured one doesn't answer, discovery finds the daemon.
         gen = cli.call({"cmd": "status"})["generation"]
         self.stop_sim()
-        self.sim = subprocess.Popen([SIM, "--host", "127.0.0.2", "--port", str(self.port), "--key", self.key,
-                                     "--root", self.sd], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        # On the class, where stop_sim() finds it (an instance attribute was left running after the tests).
+        type(self).sim = subprocess.Popen([SIM, "--host", "127.0.0.2", "--port", str(self.port), "--key", self.key,
+                                           "--root", self.sd], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                          text=True)
         w = cli.call({"cmd": "wait", "newer_than": gen, "timeout": 15})
         self.assertEqual(w["app"], "sim")
         self.assertEqual(cli.call({"cmd": "status"})["info"]["host_from"], "discovery")
@@ -327,6 +330,7 @@ class EndToEnd(unittest.TestCase):
                 cli.call({"cmd": "wait", "app": "stranger", "newer_than": gen, "timeout": 3})
         finally:
             other.kill()
+            other.communicate()
             other.communicate()
         self.assertIn("discovery request from 127.0.0.1", read(os.path.join(self.home, "daemon.log")))
 
@@ -577,7 +581,18 @@ class SdSetup(unittest.TestCase):
 
 
 class StaleDaemon(unittest.TestCase):
-    """A daemon started from older code is replaced by the current one."""
+    """A daemon started from older code is replaced by the current one; another install's is shared."""
+
+    def test_should_replace(self):
+        from dsidbg import DSIDBG_VERSION, code_id, install_origin
+        here, mine = install_origin(), code_id()
+        self.assertFalse(cli.should_replace({"code_id": mine, "origin": here, "version": DSIDBG_VERSION}))
+        self.assertTrue(cli.should_replace({"code_id": "old", "origin": here, "version": DSIDBG_VERSION}))
+        self.assertTrue(cli.should_replace({"code_id": "old"}))  # a daemon from before 0.1.2: no origin
+        other = {"code_id": "other", "origin": "/Applications/dsidbg.app/Contents/MacOS/dsidbg"}
+        self.assertFalse(cli.should_replace(dict(other, version=DSIDBG_VERSION)))  # shared, not fought over
+        self.assertFalse(cli.should_replace(dict(other, version="99.0.0")))
+        self.assertTrue(cli.should_replace(dict(other, version="0.0.1")))
 
     def test_replaced(self):
         tmp = tempfile.mkdtemp(prefix="dds")
@@ -585,8 +600,11 @@ class StaleDaemon(unittest.TestCase):
             old_pkg = os.path.join(tmp, "old")
             shutil.copytree(os.path.join(ROOT, "host", "dsidbg"), os.path.join(old_pkg, "dsidbg"),
                             ignore=shutil.ignore_patterns("__pycache__"))
-            with open(os.path.join(old_pkg, "dsidbg", "proto.py"), "a") as f:
-                f.write("# older version\n")
+            init = os.path.join(old_pkg, "dsidbg", "__init__.py")
+            with open(init) as f:
+                text = f.read()
+            with open(init, "w") as f:  # another install (this temporary copy) of an older version
+                f.write(re.sub(r'DSIDBG_VERSION = "[^"]*"', 'DSIDBG_VERSION = "0.0.1"', text, count=1))
             env = dict(os.environ, DSIDBG_HOME=os.path.join(tmp, "h"), PYTHONPATH=old_pkg)
             port = str(free_port())
             old = subprocess.Popen([sys.executable, "-m", "dsidbg", "serve", "--foreground", "--port", port,

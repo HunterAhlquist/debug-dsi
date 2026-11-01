@@ -60,9 +60,13 @@ $(BUILD)/nds/lib/irq_nds.o: src/irq_nds.s
 	@mkdir -p $(@D)
 	$(NDS_CC) $(NDS_ARCH) -specs=$(SPECS) -g -c $< -o $@
 
+# Every global symbol the library defines must start with dsidbg: apps link it next to their own code, and a
+# generic name (plat_wait_frame, say) would clash with theirs.
 $(BUILD)/nds/libdsidbg.a: $(LIB_OBJ)
 	rm -f $@
 	$(NDS_AR) rcs $@ $^
+	@bad=$$(arm-none-eabi-nm -g --defined-only $@ | awk 'NF == 3 && $$3 !~ /^dsidbg/ {print $$3}'); \
+	if [ -n "$$bad" ]; then echo "global symbols without the dsidbg prefix:" $$bad; rm -f $@; exit 1; fi
 
 $(BUILD)/nds/%/main.o: %/main.c include/dsidbg.h
 	@mkdir -p $(@D)

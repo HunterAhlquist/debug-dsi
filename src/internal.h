@@ -81,36 +81,36 @@ void dsidbg__prof_sample(uint32_t pc); // IRQ context
 void dsidbg__panic_main(void) __attribute__((noreturn));
 
 // Platform (one of platform_*.c)
-uint32_t plat_ms(void);
-int plat_init(const dsidbg_config *cfg, const char *ssid, const char *pass); // 0 = ok
-int plat_fs_init(void);
-int plat_net_poll(void);         // 1 when the network has an address
-const char *plat_net_state(void);
-uint32_t plat_ip(void);          // network byte order
-uint32_t plat_entropy(void);     // varies between boots (clock, timers)
-int plat_discovery_targets(uint32_t *addrs, int max); // broadcast addresses (network order)
-uint32_t plat_heap_used(void);   // bytes allocated from the heap (0 if unknown)
-void plat_yield(void);           // let the network stack run
-void plat_wait_frame(void);      // wait about one frame (and yield)
-void plat_heartbeat(void);       // reset the watchdog
-void plat_set_watchdog(unsigned seconds);
-uint32_t plat_prof_hz(void);
-uint32_t plat_hw_keys(void);     // scan and return the real buttons held
-int plat_capture(int screen, uint16_t *pixels, int bank); // 0 = ok
-void plat_reboot(const char *sd_path) __attribute__((noreturn));
-void plat_info(char *buf, size_t cap);
-void plat_crash_install(unsigned flags);
-void plat_crash_show(const dsidbg_crash *crash, const char *state);
+uint32_t dsidbg__plat_ms(void);
+int dsidbg__plat_init(const dsidbg_config *cfg, const char *ssid, const char *pass); // 0 = ok
+int dsidbg__plat_fs_init(void);
+int dsidbg__plat_net_poll(void);         // 1 when the network has an address
+const char *dsidbg__plat_net_state(void);
+uint32_t dsidbg__plat_ip(void);          // network byte order
+uint32_t dsidbg__plat_entropy(void);     // varies between boots (clock, timers)
+int dsidbg__plat_discovery_targets(uint32_t *addrs, int max); // broadcast addresses (network order)
+uint32_t dsidbg__plat_heap_used(void);   // bytes allocated from the heap (0 if unknown)
+void dsidbg__plat_yield(void);           // let the network stack run
+void dsidbg__plat_wait_frame(void);      // wait about one frame (and yield)
+void dsidbg__plat_heartbeat(void);       // reset the watchdog
+void dsidbg__plat_set_watchdog(unsigned seconds);
+uint32_t dsidbg__plat_prof_hz(void);
+uint32_t dsidbg__plat_hw_keys(void);     // scan and return the real buttons held
+int dsidbg__plat_capture(int screen, uint16_t *pixels, int bank); // 0 = ok
+void dsidbg__plat_reboot(const char *sd_path) __attribute__((noreturn));
+void dsidbg__plat_info(char *buf, size_t cap);
+void dsidbg__plat_crash_install(unsigned flags);
+void dsidbg__plat_crash_show(const dsidbg_crash *crash, const char *state);
 // 1 if the crash or hang interrupted the app's main thread. Otherwise (the thread scheduler, a network thread) the
 // panic loop can't switch threads: no network, no files, and the platform stops yielding. For a hang caught in the
 // scheduler (every thread waiting), it replaces the registers with the main thread's saved ones, so the report
 // shows what the main thread waited for, and sets CRASH_MAIN_BLOCKED.
-int plat_panic_on_main_thread(dsidbg_crash *crash);
-int plat_valid_ram(uint32_t addr, uint32_t len);
-void plat_console_write(const char *text, size_t len);
-void plat_hook_stdout(int enable);
+int dsidbg__plat_panic_on_main_thread(dsidbg_crash *crash);
+int dsidbg__plat_valid_ram(uint32_t addr, uint32_t len);
+void dsidbg__plat_console_write(const char *text, size_t len);
+void dsidbg__plat_hook_stdout(int enable);
 // Maps "sd:/x" to a local path. Returns 0, or -1 if the path is not allowed.
-int plat_path(const char *sd_path, char *out, size_t cap);
+int dsidbg__plat_path(const char *sd_path, char *out, size_t cap);
 
 // Portable helpers
 void dsidbg__hmac_sha1(const void *key, size_t key_len, const void *msg, size_t msg_len, uint8_t out[20]);

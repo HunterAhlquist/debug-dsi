@@ -44,16 +44,16 @@ static inline void count_frame(void)
     }
 }
 
-uint32_t plat_ms(void) { return ms_now; }
+uint32_t dsidbg__plat_ms(void) { return ms_now; }
 
-void plat_heartbeat(void)
+void dsidbg__plat_heartbeat(void)
 {
     since_beat = 0;
     if (!hooked) count_frame(); // no IRQ hook: approximate time by frames
 }
 
-void plat_set_watchdog(unsigned seconds) { watchdog_frames = seconds * 60; }
-uint32_t plat_prof_hz(void) { return hooked ? 1000 : 0; } // dswifi's 1 kHz timer drives the sampling
+void dsidbg__plat_set_watchdog(unsigned seconds) { watchdog_frames = seconds * 60; }
+uint32_t dsidbg__plat_prof_hz(void) { return hooked ? 1000 : 0; } // dswifi's 1 kHz timer drives the sampling
 
 // Called by dsidbg__irq_entry for every IRQ, before libnds' dispatcher. Returns 1 to report a hang.
 //
@@ -87,7 +87,7 @@ static int code_addr_ok(uint32_t a)
     return (a >= 0x01000000 && a < 0x01008000) || (a >= 0x02000000 && a < 0x03000000);
 }
 
-int plat_valid_ram(uint32_t addr, uint32_t len)
+int dsidbg__plat_valid_ram(uint32_t addr, uint32_t len)
 {
     uint32_t end = addr + len;
     if (end < addr) return 0;
@@ -122,7 +122,7 @@ static void exception_handler(void)
     dsidbg__panic_switch();
 }
 
-void plat_crash_install(unsigned flags)
+void dsidbg__plat_crash_install(unsigned flags)
 {
     if (!(flags & DSIDBG_NO_CRASH_HANDLER)) setExceptionHandler(exception_handler);
     // dsidbg_init() normally runs on the main thread: remember it, if this stack is the main one.
@@ -139,7 +139,7 @@ void plat_crash_install(unsigned flags)
     }
 }
 
-void plat_crash_show(const dsidbg_crash *c, const char *state)
+void dsidbg__plat_crash_show(const dsidbg_crash *c, const char *state)
 {
     static int ready;
     static const char *kinds[] = {"?", "DATA ABORT", "UNDEFINED INSTRUCTION", "HANG (watchdog)", "PANIC"};
@@ -200,7 +200,7 @@ static char wtext[48];
 
 static void wifi_start(void)
 {
-    wtime = plat_ms();
+    wtime = dsidbg__plat_ms();
     if (w_ssid[0]) {
         Wifi_ScanMode();
         wstate = W_SCAN;
@@ -222,7 +222,7 @@ static int wifi_init_thread(void *arg)
     return 0;
 }
 
-int plat_init(const dsidbg_config *cfg, const char *ssid, const char *pass)
+int dsidbg__plat_init(const dsidbg_config *cfg, const char *ssid, const char *pass)
 {
     (void)cfg;
     snprintf(w_ssid, sizeof w_ssid, "%s", ssid ? ssid : "");
@@ -234,11 +234,11 @@ int plat_init(const dsidbg_config *cfg, const char *ssid, const char *pass)
     return 0;
 }
 
-int plat_net_poll(void)
+int dsidbg__plat_net_poll(void)
 {
     switch (wstate) {
     case W_INIT:
-        if (plat_ms() > 10000) snprintf(wtext, sizeof wtext, "starting wifi (no answer yet)");
+        if (dsidbg__plat_ms() > 10000) snprintf(wtext, sizeof wtext, "starting wifi (no answer yet)");
         return 0;
     case W_INIT_FAILED:
         return 0;
@@ -257,7 +257,7 @@ int plat_net_poll(void)
             else if (w_pass[0]) Wifi_ConnectSecureAP(&ap, w_pass, strlen(w_pass));
             else Wifi_ConnectSecureAP(&ap, NULL, 0);
             wstate = W_ASSOC;
-            wtime = plat_ms();
+            wtime = dsidbg__plat_ms();
             return 0;
         }
         snprintf(wtext, sizeof wtext, "scanning for %.20s", w_ssid);
@@ -266,7 +266,7 @@ int plat_net_poll(void)
     case W_ASSOC: {
         int s = Wifi_AssocStatus();
         if (s == ASSOCSTATUS_ASSOCIATED) { wstate = W_UP; return 1; }
-        if (s == ASSOCSTATUS_CANNOTCONNECT) { wstate = W_FAIL; wtime = plat_ms(); }
+        if (s == ASSOCSTATUS_CANNOTCONNECT) { wstate = W_FAIL; wtime = dsidbg__plat_ms(); }
         snprintf(wtext, sizeof wtext, "%s", ASSOCSTATUS_STRINGS[s]);
         return 0;
     }
@@ -277,27 +277,27 @@ int plat_net_poll(void)
         return 0;
     default: // W_FAIL: retry after a pause
         snprintf(wtext, sizeof wtext, "can't connect, retrying");
-        if (plat_ms() - wtime > 5000) wifi_start();
+        if (dsidbg__plat_ms() - wtime > 5000) wifi_start();
         return 0;
     }
 }
 
-const char *plat_net_state(void) { return wtext; }
-uint32_t plat_ip(void) { return wstate == W_UP ? Wifi_GetIP() : 0; }
+const char *dsidbg__plat_net_state(void) { return wtext; }
+uint32_t dsidbg__plat_ip(void) { return wstate == W_UP ? Wifi_GetIP() : 0; }
 
-uint32_t plat_entropy(void)
+uint32_t dsidbg__plat_entropy(void)
 {
     // RTC seconds differ between boots; the timer and scanline add jitter from Wi-Fi timing.
     return (uint32_t)time(NULL) * 2654435761u ^ (uint32_t)REG_VCOUNT << 16 ^
            TIMER_DATA(LIBNDS_DEFAULT_TIMER_WIFI) ^ vblanks * 40503u;
 }
-uint32_t plat_heap_used(void)
+uint32_t dsidbg__plat_heap_used(void)
 {
     struct mallinfo mi = mallinfo();
     return (uint32_t)mi.uordblks;
 }
 
-int plat_discovery_targets(uint32_t *addrs, int max)
+int dsidbg__plat_discovery_targets(uint32_t *addrs, int max)
 {
     // The limited broadcast address, and the subnet's directed broadcast when DHCP gave us a netmask.
     int n = 0;
@@ -309,21 +309,21 @@ int plat_discovery_targets(uint32_t *addrs, int max)
 }
 static int no_threads; // set by the panic loop when it took over something other than the main thread
 
-void plat_yield(void)
+void dsidbg__plat_yield(void)
 {
     if (!no_threads) cothread_yield();
 }
 
-void plat_wait_frame(void)
+void dsidbg__plat_wait_frame(void)
 {
-    plat_yield();
+    dsidbg__plat_yield();
     swiWaitForVBlank();
-    plat_yield();
+    dsidbg__plat_yield();
 }
 
 // BlocksDS runs main() on the DTCM stack below the top 1 KiB, which the thread scheduler keeps (crt0 passes
 // __sp_usr - 0x400 to cothread_start); other threads' stacks are on the heap.
-int plat_panic_on_main_thread(dsidbg_crash *c)
+int dsidbg__plat_panic_on_main_thread(dsidbg_crash *c)
 {
     extern char __sp_usr[], __dtcm_start[];
     uint32_t sp = c->regs[13], bottom = (uint32_t)(uintptr_t)__dtcm_start, top = (uint32_t)(uintptr_t)__sp_usr - 0x400;
@@ -356,28 +356,28 @@ int plat_panic_on_main_thread(dsidbg_crash *c)
 // ---------------------------------------------------------------------------------------------------------------
 // Files, keys, screen, reboot
 
-int plat_fs_init(void)
+int dsidbg__plat_fs_init(void)
 {
     // The agent only uses "sd:/". NAND is never mounted by it; keep NAND writes blocked even if the app mounts it.
     if (isDSiMode()) nand_WriteProtect(true);
     return fatInitDefault() ? 0 : -1;
 }
 
-int plat_path(const char *sd_path, char *out, size_t cap)
+int dsidbg__plat_path(const char *sd_path, char *out, size_t cap)
 {
     if (strlen(sd_path) >= cap) return -1;
     strcpy(out, sd_path);
     return 0;
 }
 
-uint32_t plat_hw_keys(void)
+uint32_t dsidbg__plat_hw_keys(void)
 {
     scanKeys();
     return keysHeld();
 }
 
 // Captures the main engine's output (what the top screen shows, unless the app swapped screens) into `bank`.
-int plat_capture(int screen, uint16_t *pixels, int bank)
+int dsidbg__plat_capture(int screen, uint16_t *pixels, int bank)
 {
     if (screen != DSIDBG_SCREEN_TOP || bank < 0 || bank > 3) return -1;
     vu8 *cr = &VRAM_A_CR + bank;
@@ -387,7 +387,7 @@ int plat_capture(int screen, uint16_t *pixels, int bank)
                      DCAP_SIZE(DCAP_SIZE_256x192) | DCAP_OFFSET(0) | DCAP_BANK(bank) | DCAP_A(16);
     int ok = 0;
     for (int i = 0; i < 4; i++) {
-        plat_wait_frame();
+        dsidbg__plat_wait_frame();
         if (!(REG_DISPCAPCNT & DCAP_ENABLE)) { ok = 1; break; }
     }
     if (ok) memcpy(pixels, (const void *)(0x06800000 + bank * 0x20000), 256 * 192 * 2);
@@ -435,7 +435,7 @@ ITCM_CODE ARM_CODE __attribute__((noinline, noreturn)) static void unlaunch_comm
     for (;;) {}
 }
 
-void plat_reboot(const char *sd_path)
+void dsidbg__plat_reboot(const char *sd_path)
 {
     u32 block[UNLAUNCH_INFO_SIZE / 4]; // on the stack (DTCM), away from the block's destination
     uintptr_t b = (uintptr_t)block;
@@ -450,7 +450,7 @@ void plat_reboot(const char *sd_path)
     for (;;) swiWaitForVBlank();
 }
 
-void plat_info(char *buf, size_t cap)
+void dsidbg__plat_info(char *buf, size_t cap)
 {
     snprintf(buf, cap, "mode=%s\nirq_hook=%d\n", isDSiMode() ? "dsi" : "ds", hooked);
 }
@@ -465,14 +465,14 @@ static ssize_t stdout_fn(const char *ptr, size_t len)
     return (ssize_t)len;
 }
 
-void plat_hook_stdout(int mode)
+void dsidbg__plat_hook_stdout(int mode)
 {
     stdout_echo = mode == 2;
     consoleSetCustomStdout(mode ? stdout_fn : NULL);
     consoleSetCustomStderr(mode ? stdout_fn : NULL);
 }
 
-void plat_console_write(const char *text, size_t len)
+void dsidbg__plat_console_write(const char *text, size_t len)
 {
     for (size_t i = 0; i < len; i++) consolePrintChar(text[i]);
 }

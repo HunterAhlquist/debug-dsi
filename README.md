@@ -14,7 +14,7 @@ daemon on your computer. From the command line (or an AI agent) you can then:
 
 It is built with [BlocksDS](https://blocksds.skylyrac.net/) and targets DSi mode (DSi Wi-Fi supports WPA2).
 
-> Status: 0.1.1, tested on a DSi XL (hiyaCFW + Unlaunch, home Wi-Fi) and in a melonDS development build:
+> Status: 0.1.2, tested on a DSi XL (hiyaCFW + Unlaunch, home Wi-Fi) and in a melonDS development build:
 > Wi-Fi, input, screenshots, logs, file transfer (about 150 KiB/s), pushing and booting a build through Unlaunch,
 > the profiler, and crash and hang reports with recovery from the crash screen. The daemon, CLI and protocol also
 > have end-to-end tests against a simulator that runs the same agent code (`make test`). The daemon serves one

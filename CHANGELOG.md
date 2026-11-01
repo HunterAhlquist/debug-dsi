@@ -5,6 +5,17 @@ host/dsidbg/__init__.py); the wire protocol has its own `PROTO_VERSION`, and the
 same one. `dsidbg_config` may gain fields: always start from `dsidbg_config_defaults()` and rebuild the app when the
 library changes (it is a static library).
 
+## 0.1.2 (2026-11-01)
+
+- The library's internal functions are named `dsidbg__plat_*` instead of `plat_*`, which clashed with an app's own
+  functions of the same name (found linking it into ff9-ds). The build now fails if the library defines a global
+  symbol without the `dsidbg` prefix.
+- Two installs (the app and a repo checkout, say) no longer replace each other's daemon in turn: a daemon is only
+  replaced by newer code of the same install, or by a newer version. The daemon's status reports its version and
+  install.
+- Crash reports get file:line again when the daemon was started by the app (from Finder or at login): addr2line is
+  also looked for in the usual toolchain folders, not only on PATH.
+
 ## 0.1.1 (2026-11-01)
 
 - The macOS app is signed with a Developer ID and notarized by Apple in the release workflow, so it opens without a

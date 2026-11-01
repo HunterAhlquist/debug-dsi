@@ -21,7 +21,7 @@ import threading
 import time
 import zlib
 
-from . import code_id, control_socket, proto
+from . import DSIDBG_VERSION, code_id, control_socket, install_origin, proto
 from .png import rgb555_to_png
 from .symbols import Symbols, format_crash
 
@@ -437,7 +437,8 @@ class Daemon:
     def cmd_status(self, req, reply):
         dev = self.device
         out = {"port": self.port, "bind": self.bind, "home": self.home, "generation": self.generation,
-               "code_id": self.code_id, "connected": bool(dev and dev.alive)}
+               "code_id": self.code_id, "version": DSIDBG_VERSION, "origin": install_origin(),
+               "connected": bool(dev and dev.alive)}
         if dev and dev.alive:
             out.update(app=dev.app, build=dev.build, addr=dev.addr[0], connected_at=dev.connected_at,
                        info=dev.info, status=dev.status)

@@ -32,7 +32,7 @@
 extern "C" {
 #endif
 
-#define DSIDBG_VERSION "0.1.1"
+#define DSIDBG_VERSION "0.1.2"
 
 // Screens for screenshots.
 #define DSIDBG_SCREEN_TOP    0 // the main 2D/3D engine (display capture)

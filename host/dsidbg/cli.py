@@ -104,16 +104,29 @@ def detached():
     return {"start_new_session": True}
 
 
+def should_replace(st):
+    """Whether this code should replace the running daemon described by `st` (its status reply): when it runs older
+    code of this same install (the install was updated), or a lower version from another install. A daemon from
+    another install of the same or a newer version is kept and shared, so two installs (the app and a checkout)
+    don't keep replacing each other's daemon."""
+    from . import DSIDBG_VERSION, code_id, install_origin, version_tuple
+    if st.get("code_id") == code_id():
+        return False
+    origin = st.get("origin")
+    if origin is None or origin == install_origin():  # same install updated (daemons before 0.1.2 send no origin)
+        return True
+    return version_tuple(st.get("version")) < version_tuple(DSIDBG_VERSION)
+
+
 def ensure_daemon(port=proto.DEFAULT_PORT, bind="0.0.0.0"):
-    """Starts the daemon in the background unless it is running, and replaces a daemon started from older code.
-    Returns (status, started). Prints nothing."""
-    from . import code_id
+    """Starts the daemon in the background unless one is running, and replaces a daemon this code supersedes (see
+    should_replace). Returns (status, started). Prints nothing."""
     had_device = False
     try:
         st = call({"cmd": "status"})
-        if st.get("code_id") == code_id():
+        if not should_replace(st):
             return st, False
-        # Started before the code was updated: replace it, keeping its port. The DSi reconnects by itself.
+        # Superseded: replace it, keeping its port. The DSi reconnects by itself.
         had_device, port, bind = st.get("connected"), st.get("port", port), st.get("bind", bind)
         try:
             call({"cmd": "shutdown"})

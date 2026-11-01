@@ -2,9 +2,29 @@
 """Symbolization of DSi addresses: an ELF32 symbol table reader (standard library only), plus file:line through
 arm-none-eabi-addr2line when it is installed."""
 import bisect
+import glob
+import os
 import shutil
 import struct
 import subprocess
+
+
+# Where ARM toolchains usually live. Apps started from Finder, the Start menu or at login don't get the shell's PATH,
+# so the daemon they start wouldn't find addr2line (crash reports then lack file:line).
+TOOL_DIRS = ["/opt/homebrew/bin", "/usr/local/bin", "~/.local/bin", "/opt/wonderful/toolchain/gcc-arm-none-eabi/bin",
+             "/opt/devkitpro/devkitARM/bin", "/Applications/ArmGNUToolchain/*/arm-none-eabi/bin",
+             "C:/Program Files*/Arm GNU Toolchain*/*/bin"]
+
+
+def find_tool(name):
+    """`name` from PATH, $DEVKITARM/bin, or the usual toolchain folders (newest version first); None if absent."""
+    found = shutil.which(name)
+    if found:
+        return found
+    dirs = [os.path.join(os.environ["DEVKITARM"], "bin")] if os.environ.get("DEVKITARM") else []
+    for pattern in TOOL_DIRS:
+        dirs += sorted(glob.glob(os.path.expanduser(pattern)), reverse=True)
+    return shutil.which(name, path=os.pathsep.join(dirs)) if dirs else None
 
 
 class Symbols:
@@ -59,7 +79,7 @@ class Symbols:
 
     def lines(self, addrs):
         """addr -> 'file:line' via addr2line, if available."""
-        tool = shutil.which("arm-none-eabi-addr2line")
+        tool = find_tool("arm-none-eabi-addr2line")
         if not tool or not addrs:
             return {}
         try:

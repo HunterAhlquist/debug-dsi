@@ -17,33 +17,33 @@ static uint32_t last_beat;
 
 void dsidbg_sim_set_root(const char *root) { sd_root = root; }
 
-uint32_t plat_ms(void)
+uint32_t dsidbg__plat_ms(void)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
 }
 
-int plat_init(const dsidbg_config *cfg, const char *ssid, const char *pass)
+int dsidbg__plat_init(const dsidbg_config *cfg, const char *ssid, const char *pass)
 {
     (void)cfg; (void)ssid; (void)pass;
     return 0;
 }
 
-int plat_fs_init(void) { return 0; }
-int plat_net_poll(void) { return 1; }
-const char *plat_net_state(void) { return "host network"; }
-uint32_t plat_ip(void) { return 0x0100007f; }
+int dsidbg__plat_fs_init(void) { return 0; }
+int dsidbg__plat_net_poll(void) { return 1; }
+const char *dsidbg__plat_net_state(void) { return "host network"; }
+uint32_t dsidbg__plat_ip(void) { return 0x0100007f; }
 
-uint32_t plat_entropy(void)
+uint32_t dsidbg__plat_entropy(void)
 {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     return (uint32_t)ts.tv_nsec ^ (uint32_t)ts.tv_sec * 2654435761u ^ (uint32_t)getpid() << 16;
 }
-uint32_t plat_heap_used(void) { return 0; }
+uint32_t dsidbg__plat_heap_used(void) { return 0; }
 
-int plat_discovery_targets(uint32_t *addrs, int max)
+int dsidbg__plat_discovery_targets(uint32_t *addrs, int max)
 {
     // The simulator asks on loopback (DSIDBG_SIM_DISCOVER overrides it, e.g. a broadcast address).
     const char *to = getenv("DSIDBG_SIM_DISCOVER");
@@ -52,14 +52,14 @@ int plat_discovery_targets(uint32_t *addrs, int max)
     addrs[0] = a.s_addr;
     return 1;
 }
-void plat_yield(void) { usleep(200); }
-void plat_wait_frame(void) { usleep(16667); }
-void plat_heartbeat(void) { last_beat = plat_ms(); }
-void plat_set_watchdog(unsigned seconds) { watchdog_s = seconds; }
-uint32_t plat_prof_hz(void) { return 1000; }
-uint32_t plat_hw_keys(void) { return 0; }
+void dsidbg__plat_yield(void) { usleep(200); }
+void dsidbg__plat_wait_frame(void) { usleep(16667); }
+void dsidbg__plat_heartbeat(void) { last_beat = dsidbg__plat_ms(); }
+void dsidbg__plat_set_watchdog(unsigned seconds) { watchdog_s = seconds; }
+uint32_t dsidbg__plat_prof_hz(void) { return 1000; }
+uint32_t dsidbg__plat_hw_keys(void) { return 0; }
 
-int plat_capture(int screen, uint16_t *pixels, int bank)
+int dsidbg__plat_capture(int screen, uint16_t *pixels, int bank)
 {
     (void)bank;
     // Gradient test pattern: red grows to the right, green downwards, blue marks the screen.
@@ -69,32 +69,32 @@ int plat_capture(int screen, uint16_t *pixels, int bank)
     return 0;
 }
 
-void plat_reboot(const char *sd_path)
+void dsidbg__plat_reboot(const char *sd_path)
 {
     printf("SIM REBOOT %s\n", sd_path ? sd_path : "(default)");
     fflush(stdout);
     exit(sd_path ? 4 : 3);
 }
 
-void plat_info(char *buf, size_t cap) { snprintf(buf, cap, "mode=sim\nroot=%s\n", sd_root); }
-void plat_crash_install(unsigned flags) { (void)flags; }
-int plat_panic_on_main_thread(dsidbg_crash *crash) { (void)crash; return 1; }
+void dsidbg__plat_info(char *buf, size_t cap) { snprintf(buf, cap, "mode=sim\nroot=%s\n", sd_root); }
+void dsidbg__plat_crash_install(unsigned flags) { (void)flags; }
+int dsidbg__plat_panic_on_main_thread(dsidbg_crash *crash) { (void)crash; return 1; }
 
-void plat_crash_show(const dsidbg_crash *c, const char *state)
+void dsidbg__plat_crash_show(const dsidbg_crash *c, const char *state)
 {
     fprintf(stderr, "SIM CRASH kind=%u pc=%08x msg=%s [%s]\n", (unsigned)c->kind, (unsigned)c->regs[15], c->msg, state);
 }
 
-int plat_valid_ram(uint32_t addr, uint32_t len)
+int dsidbg__plat_valid_ram(uint32_t addr, uint32_t len)
 {
     (void)addr; (void)len;
     return 0; // host addresses don't fit in 32 bits; skip the stack copy
 }
 
-void plat_console_write(const char *text, size_t len) { fwrite(text, 1, len, stdout); }
-void plat_hook_stdout(int enable) { (void)enable; }
+void dsidbg__plat_console_write(const char *text, size_t len) { fwrite(text, 1, len, stdout); }
+void dsidbg__plat_hook_stdout(int enable) { (void)enable; }
 
-int plat_path(const char *sd_path, char *out, size_t cap)
+int dsidbg__plat_path(const char *sd_path, char *out, size_t cap)
 {
     int n = snprintf(out, cap, "%s/%s", sd_root, sd_path + 4);
     return n < 0 || (size_t)n >= cap ? -1 : 0;
@@ -103,5 +103,5 @@ int plat_path(const char *sd_path, char *out, size_t cap)
 // The simulator checks this itself (there is no VBlank interrupt on the host).
 int dsidbg_sim_watchdog_expired(void)
 {
-    return watchdog_s && plat_ms() - last_beat > watchdog_s * 1000u;
+    return watchdog_s && dsidbg__plat_ms() - last_beat > watchdog_s * 1000u;
 }
